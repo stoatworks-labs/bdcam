@@ -56,13 +56,27 @@ hence zig as the C compiler, pinned to `aarch64-linux-gnu.2.28`.
 ## Layout
 
 ```
-main.go        CLI, run loop, stats, the receiver-disconnect detector
-ndi.go         runtime bindings to libndi's send API (dlopen, free-SDK surface)
-v4l2.go        capture, written straight against the ioctl interface
-frame.go       format conversion + the synthetic colour-bar source
-frame_test.go  struct layouts and colour conversion
-build.sh       cross-compile
+main.go          CLI, NDI run loop, stats, the receiver-disconnect detector
+ndi.go           runtime bindings to libndi's send API (dlopen, free-SDK surface)
+v4l2.go          capture, written straight against the ioctl interface
+frame.go         format conversion + the synthetic colour-bar source
+pipeline.go      GStreamer pipeline construction for SRT and HDMI
+run_pipeline.go  the SRT/HDMI run loop
+annexb.go        recovering access units from the encoder's byte stream
+mpegts.go        MPEG-TS muxer (the device has none)
+srt.go           SRT transport, pure Go
+build.sh         cross-compile
 ```
+
+## The SRT and HDMI paths depend on the device's GStreamer
+
+`mpph264enc`, `mppjpegdec` and `kmssink` are all present on stock firmware and
+do the heavy lifting; `bdcam` shells out to `gst-launch-1.0` and owns only the
+transport. That is a deliberate trade — the vendor elements are tested against
+this silicon and hand-written MPP/DRM bindings are not — but it does mean those
+outputs are only as good as what the device's plugins expose. In this build
+`mpph264enc` exposes no properties at all, so bitrate is not adjustable without
+replacing it.
 
 ## Things that have bitten
 
@@ -71,6 +85,9 @@ build.sh       cross-compile
   matters because the device ships two copies which need not be licensed alike.
 - **`PPApp` is DRM master on `card0`.** Anything that wants the HDMI output has
   to stop it first; there is no sharing.
-- **The MJPEG path is a placeholder.** Software JPEG decode is roughly a core at
-  1080p on this SoC, taken from the same budget SpeedHQ is already straining.
-  Check `--list` before assuming a camera is cheap to ingest.
+- **The MJPEG path is a placeholder on the NDI side only.** Software JPEG decode
+  is roughly a core at 1080p on this SoC. The SRT/HDMI pipeline gets hardware
+  decode from `mppjpegdec`; the NDI path still does not. Check `--list` before
+  assuming a camera is cheap to ingest.
+- **Stopping `PPApp` to free DRM leaves the HDMI output dark.** It looks like a
+  brick and is not. Start `BirdDogRunner` again when you are done.

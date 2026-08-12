@@ -59,12 +59,19 @@ func DialSRT(raw string) (*SRTSender, error) {
 	}
 	cfg.PayloadSize = srtPayloadSize
 
+	// gosrt's default Latency is negative, meaning "defer to the peer". Saying
+	// "latency=-1ns" in the log is just confusing.
+	lat := "peer default"
+	if cfg.Latency > 0 {
+		lat = cfg.Latency.String()
+	}
+
 	addr := u.Host
 	conn, err := srt.Dial("srt", addr, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("SRT dial %s: %w", addr, err)
 	}
-	logf("SRT connected to %s (streamid=%q, latency=%s)", addr, cfg.StreamId, cfg.Latency)
+	logf("SRT connected to %s (streamid=%q, latency=%s)", addr, cfg.StreamId, lat)
 	return &SRTSender{conn: conn, target: addr, pending: make([]byte, 0, srtPayloadSize)}, nil
 }
 

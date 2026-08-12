@@ -1,30 +1,42 @@
 # bdcam — UVC camera to NDI on a BirdDog PLAY
 
-Milestone 1 of the "webcam in, HDMI/NDI out" pathway. V4L2 capture from a USB
-camera on the PLAY's USB-A port into an NDI sender backed by **the device's own
+The "webcam in, HDMI/NDI/SRT out" pathway. V4L2 capture from a USB camera on the
+PLAY's USB-A port, out as NDI, SRT or HDMI. NDI is backed by **the device's own
 libndi**, loaded with `dlopen` — the same approach as the `bdkvm` NDI KVM
 endpoint in the (local-only) `birddog-re` research repo.
 
-Uncompressed NDI only — that is libndi's SpeedHQ encoder, running on the CPU.
-The VEPU hardware encoder, the compressed/HX send path and the DRM HDMI output
-are later milestones (see [Roadmap](#roadmap)).
+Outputs are **NDI**, **SRT** and **HDMI**. NDI is uncompressed (libndi's SpeedHQ
+encoder, on the CPU); SRT and HDMI run on the device's own GStreamer, using the
+VEPU hardware H.264 encoder and `kmssink`. The compressed NDI|HX send path is
+still a later milestone (see [Roadmap](#roadmap)).
 
-## Why this first
+**Verified on hardware, 2026-08-12**, on a PLAY running 1.0.30: NDI send, SRT
+out (validated by an independent demuxer) and HDMI via `kmssink` all work. The
+camera itself is still untested — no UVC device has yet enumerated on the unit,
+so every result so far used `--synthetic`.
 
-Two unknowns decide whether the rest of the pathway is worth building, and both
-can be answered by this binary **with no camera attached**:
+## What the measurements said
 
-1. **Does the Advanced-SDK 30-minute development limit apply to the libndi
-   already on the device?** Both shipped copies (`libndi.so.5.5.2` and
-   `libndi.so.6.0.1`) contain the string *"designed for development use and will
-   run on a stream for 30 minutes"*. It is present in every build of the
-   library, so it cannot tell us statically whether BirdDog's copy is licensed —
-   and it may never have mattered to them, because PLAY only ever receives.
-2. **What can four A53s at 1.392 GHz actually sustain through SpeedHQ?**
-   The `birddog-re` analysis puts RK3328 at ~0.6× RK3566 on the CPU codec path,
-   which puts
-   1080p30 at or beyond the whole SoC. That is an estimate. This makes it a
-   number.
+Both questions this was built to answer have now been answered on hardware,
+using `--synthetic` with no camera attached.
+
+**1. The 30-minute development limit does not apply.** Both shipped copies of
+libndi (`libndi.so.5.5.2` and `libndi.so.6.0.1`) contain the string *"designed
+for development use and will run on a stream for 30 minutes"* — but it is in
+every build of the library and proves nothing on its own. A sender was run
+against `libndi.so.5.5.2` for **41.5 minutes of continuously connected
+streaming: two receivers, zero disconnect events, a flat 29.99 fps, no dropped
+frames**. There is no cutoff.
+
+**2. SpeedHQ costs about 1.18 cores at 720p30.** Measured with a receiver
+attached and actually decoding: `bdcam` at 117.6% CPU, `PPApp` taking another
+29.4% to decode it back, the box still 57% idle. Scaling by pixel count puts
+1080p30 near 2.6 cores — inside the 2.5–5.0 the `birddog-re` analysis predicted,
+at the optimistic end.
+
+For comparison, the hardware codecs: **decode runs at 218 fps at 720p** and is
+essentially free; **the VEPU encode is the limiter at roughly 31 fps at 720p**,
+though that figure was taken with ~1.2 cores of other load on the box.
 
 ## Build
 
@@ -35,19 +47,25 @@ can be answered by this binary **with no camera attached**:
 Go + [purego](https://github.com/ebitengine/purego) + `zig cc` targeting
 `aarch64-linux-gnu.2.28`, same as `bdkvm`: purego needs cgo for `dlopen`, macOS
 has no aarch64-linux gcc, and the glibc pin keeps the binary compatible with the
-PLAY's Debian 10. Output is `dist/bdcam-linux-arm64` (~2 MB).
+PLAY's Debian 10. Output is `dist/bdcam-linux-arm64` (~3.4 MB).
 
 Always build through `build.sh` or with `GOOS=linux` set — this is Linux-only
 code.
 
 ```bash
-go test ./...        # struct layouts and colour conversion, runs on the host
+go test ./...        # layouts, colour conversion, TS muxing, pipeline shape
 ```
 
 The layout tests are worth keeping green. Every V4L2 ioctl number encodes the
 size of the struct it carries, so a wrong field makes the *kernel* reject the
 call; the NDI structs have no such check on the other side at all, and a mistake
-there is a garbled frame or a crash inside libndi.
+there is a garbled frame or a crash inside libndi. The MPEG-TS tests are the
+same idea one layer up — a receiver will simply refuse a stream whose PSI CRCs
+or continuity counters are wrong, and say nothing useful about why.
+
+Beyond the host tests, the muxer output has been round-tripped on the device
+through `tsdemux ! h264parse ! mppvideodec` — an independent demuxer and the
+hardware decoder — to EOS with no errors.
 
 ## Install
 
@@ -73,7 +91,10 @@ ssh -p 9031 root@<play> 'echo BDCAM_ARGS=\"--size 1920x1080 --fps 30\" > /userda
 
 Logs go to `/userdata/bd-cam/bdcam.log` (rotated at 1 MB).
 
-## The two experiments
+## Reproducing the measurements
+
+Both of these are settled (see above); this is how to re-run them, on another
+unit or after a firmware change.
 
 ### 1. The 30-minute question
 
@@ -126,6 +147,51 @@ it took to get there.
 With `--clock` left on (the default), the same numbers tell you whether the
 declared rate is actually being met in normal operation.
 
+## Outputs
+
+```bash
+bdcam --output ndi                                    # SpeedHQ, on the CPU
+bdcam --output srt  --srt-url srt://host:9000?streamid=cam
+bdcam --output hdmi                                   # kmssink, straight to the panel
+bdcam --output srt,hdmi --srt-url srt://host:9000     # one capture, tee'd to both
+```
+
+SRT and HDMI are built on the device's own GStreamer, which carries exactly the
+elements needed: `mpph264enc` (the VEPU), `mppjpegdec` (hardware JPEG, so an
+MJPEG camera costs no CPU) and `kmssink`. Encoded H.264 comes back over a pipe,
+gets split into access units and muxed to MPEG-TS here — the device has no muxer
+at all, and its libsrt exists only statically linked inside `PPApp`, so neither
+could be borrowed.
+
+Three limits worth knowing before designing around this, all measured:
+
+- **`mpph264enc` has no tunable properties in this build.** No bitrate, no GOP,
+  no rate-control mode; it derives a bitrate from the caps (3.456 Mbps at
+  720p30). A bitrate control means replacing the element.
+- **Its sink caps stop at 1920×1088 and 60/1**, so 1080p is the ceiling here
+  whatever the camera can do. `bdcam` rejects anything larger with a clear
+  message rather than letting caps negotiation fail obscurely.
+- **`--output ndi` cannot be combined with `srt` or `hdmi` yet.** The NDI path
+  does its own V4L2 capture while GStreamer owns the camera for the others, and
+  one device cannot have two owners.
+
+### HDMI has two possible routes
+
+`--output hdmi` uses `kmssink`, which needs DRM master — and `PPApp` holds it:
+
+```bash
+systemctl stop BirdDogRunner      # remember to start it again afterwards
+```
+
+While it is stopped the HDMI output is dark, which looks like a brick and is
+not. `bdcam` checks and warns before GStreamer hits the failure.
+
+The alternative is to leave `PPApp` running and let *it* do the display: send
+SRT to `127.0.0.1` and point the decoder at it. That costs an encode/decode
+round trip, but both ends are hardware (VEPU out, rkvdec back in at 218 fps), and
+it keeps the OSD, web UI, tally and CloudConnect intact. For a device that
+should still behave like a PLAY, that is usually the better trade.
+
 ## Capture formats, and why the choice matters
 
 `--format auto` (the default) picks in this order, which is strictly an order of
@@ -157,32 +223,27 @@ about SpeedHQ alone. If it is MJPEG-only, subtract a core before you start.
 
 ## Roadmap
 
-Ordered by what unblocks the most:
+Done, and verified on hardware: NDI send, SRT out, HDMI via `kmssink`, hardware
+JPEG decode on the SRT/HDMI path.
 
-1. **MPP JPEG decode** — replace `image/jpeg` with the vdpu via
-   `librockchip_mpp.so.1`, which is already on the device. Removes the MJPEG
-   penalty entirely.
-2. **DRM/HDMI output** — `PPApp` is DRM master on `card0`, so this means
-   stopping it and owning the display, MPP→DRM with no RGA (the path found in
-   `PPApp` itself). Costs the OSD, web UI integration, tally and CloudConnect.
-3. **VEPU H.264 encode** — `vepu@ff340000` is enabled with the `rk_vcodec`
-   driver in-kernel. Hantro-class: H.264 only, ~1080p30, no HEVC, no B-frames.
-   Feeds both of the next two.
-4. **SRT out** — libsrt is already linked into `PPApp` and therefore already on
-   the box. Licence-free, and the cheapest way to get encoded video off the
-   device.
-5. **NDI|HX (compressed send)** — the device's libndi exports
+Still open, roughly in order of value:
+
+1. **A real camera.** Everything so far is `--synthetic`; no UVC device has yet
+   enumerated on the test unit. The first real frame is the outstanding unknown.
+2. **One capture owner**, so `ndi` can be combined with `srt`/`hdmi`. Either
+   move NDI onto the GStreamer pipeline via a second `tee` branch, or have
+   GStreamer feed frames back over the existing pipe.
+3. **Hardware JPEG decode on the NDI path too.** The pipeline path already gets
+   it from `mppjpegdec`; the NDI path still uses Go's `image/jpeg`, which is
+   roughly a core at 1080p.
+4. **Bitrate control**, which means replacing `mpph264enc` — most likely driving
+   MPP directly, since the element exposes nothing.
+5. **NDI|HX (compressed send).** The device's libndi exports
    `send_compressed_video` and `codec_h264_hevc_alpha`, so VEPU H.264 → NDI at
-   near-zero CPU is technically available. Blocked on the 30-minute answer above
-   and on reconstructing the Advanced structs without headers.
-6. **Audio** — UAC capture from the camera into `NDIlib_send_send_audio_v3`.
-   `AlsaAudioSink` in `PPApp` shows the device side works.
-
-Also still open, and answerable only with a unit in hand: whether the USB-A port
-is on the dwc3 (USB 3.0) or the EHCI (USB 2.0), which decides whether
-uncompressed capture above 720p is possible at all, and whether the port will
-power a camera rather than just a keyboard. `bdcam --list` plus `lsusb -t`
-answers it.
+   near-zero CPU is available. Now unblocked by the 30-minute answer above, but
+   still needs the Advanced structs reconstructed without headers.
+6. **Audio** — UAC capture into `NDIlib_send_send_audio_v3`, and into the TS for
+   SRT.
 
 ## On the NDI SDK
 
