@@ -52,6 +52,9 @@ func main() {
 		duration  = flag.Duration("duration", 0, "stop after this long (0 = run forever)")
 		nbufs     = flag.Int("buffers", 4, "number of V4L2 capture buffers")
 		ndiLib    = flag.String("ndi-lib", "", "soname or path of libndi to load first (default: newest found)")
+		output    = flag.String("output", "ndi", "outputs: ndi, srt, hdmi (comma separated; srt+hdmi may be combined)")
+		srtURL    = flag.String("srt-url", "", "srt://host:port[?streamid=..&passphrase=..&latency=ms]")
+		connector = flag.Int("connector", 0, "DRM connector id for hdmi output (0 = let kmssink choose)")
 	)
 	flag.Parse()
 
@@ -70,6 +73,16 @@ func main() {
 	w, h, err := parseSize(*size)
 	if err != nil {
 		logf("FATAL: %v", err)
+		os.Exit(2)
+	}
+
+	outs, err := parseOutputs(*output)
+	if err != nil {
+		logf("FATAL: %v", err)
+		os.Exit(2)
+	}
+	if outs.SRT && *srtURL == "" {
+		logf("FATAL: --output srt needs --srt-url")
 		os.Exit(2)
 	}
 
@@ -94,6 +107,9 @@ func main() {
 		duration:  *duration,
 		nbufs:     *nbufs,
 		ndiLib:    *ndiLib,
+		out:       outs,
+		srtURL:    *srtURL,
+		connector: *connector,
 	}); err != nil {
 		logf("FATAL: %v", err)
 		// Exit 1 so systemd's Restart=always retries. A missing camera is not
@@ -115,9 +131,15 @@ type runConfig struct {
 	duration  time.Duration
 	nbufs     int
 	ndiLib    string
+	out       Outputs
+	srtURL    string
+	connector int
 }
 
 func run(cfg runConfig) error {
+	if cfg.out.SRT || cfg.out.HDMI {
+		return runPipeline(cfg)
+	}
 	ndi, err := LoadNDI(cfg.ndiLib)
 	if err != nil {
 		return err

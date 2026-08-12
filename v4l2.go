@@ -470,3 +470,27 @@ func cstring(b []byte) string {
 	}
 	return string(b)
 }
+
+// EnumFormats lists the pixel formats a capture device offers, without
+// configuring or streaming it.
+func EnumFormats(path string) ([]uint32, error) {
+	fd, err := syscall.Open(path, syscall.O_RDWR|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer syscall.Close(fd)
+	var out []uint32
+	for i := 0; ; i++ {
+		var d v4l2Fmtdesc
+		d.Index = uint32(i)
+		d.Type = bufTypeVideoCapture
+		if err := ioctl(fd, vidiocEnumFmt, unsafe.Pointer(&d)); err != nil {
+			break
+		}
+		out = append(out, d.Pixelformat)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%s offers no capture formats", path)
+	}
+	return out, nil
+}
