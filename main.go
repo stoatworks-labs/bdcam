@@ -268,11 +268,14 @@ func (s *stats) report(send *Sender, force bool) {
 	}
 
 	window := now.Sub(s.last).Seconds()
-	inst := 0.0
-	if window > 0 {
+	avg := float64(s.frames) / now.Sub(s.start).Seconds()
+	// A forced report can land in the same instant as a periodic one — at the
+	// duration deadline, say — leaving no window to measure and printing a
+	// meaningless 0.00. Fall back to the average rather than lie.
+	inst := avg
+	if window > 0.5 {
 		inst = float64(s.frames-s.atLast) / window
 	}
-	avg := float64(s.frames) / now.Sub(s.start).Seconds()
 	logf("frames=%d fps=%.2f (avg %.2f) conns=%d dropped=%d converr=%d",
 		s.frames, inst, avg, conns, s.dropped, s.convErrs)
 
