@@ -1,9 +1,17 @@
 # bdcam — UVC camera to NDI on a BirdDog PLAY
 
+> **AI-assisted project.** This codebase was created with [Claude Code](https://claude.com/claude-code)
+> (Anthropic), directed and reviewed by a human author. Every performance figure and hardware
+> claim below was measured on a real BirdDog PLAY (firmware 1.0.30) with a real camera, not
+> estimated — but that is **one unit, one firmware, one camera**. The camera in question is an
+> ATEM Mini Extreme ISO presenting 1080p 4:2:2 MJPEG over UVC 1.5; a different camera exercises
+> different paths, and several findings here are specific to what this firmware's GStreamer and
+> decoder do.
+
 The "webcam in, HDMI/NDI/SRT out" pathway. V4L2 capture from a USB camera on the
 PLAY's USB-A port, out as NDI, SRT or HDMI. NDI is backed by **the device's own
 libndi**, loaded with `dlopen` — the same approach as the `bdkvm` NDI KVM
-endpoint in the (local-only) `birddog-re` research repo.
+endpoint in the `birddog-re` research repo (private).
 
 Outputs are **NDI**, **SRT** and **HDMI**. NDI is uncompressed (libndi's SpeedHQ
 encoder, on the CPU); SRT and HDMI run on the device's own GStreamer, using the
@@ -294,6 +302,10 @@ Still open, roughly in order of value:
    still needs the Advanced structs reconstructed without headers.
 6. **Audio** — UAC capture into `NDIlib_send_send_audio_v3`, and into the TS for
    SRT.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE).
 
 ## On the NDI SDK
 

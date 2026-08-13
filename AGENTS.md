@@ -11,10 +11,10 @@ rules.
 
 `bdcam` is the canonical, standalone home of this program. The reverse
 engineering that justifies every claim in the README lives in
-`~/Projects/birddog-re` — **local-only, no remote, and it must stay that way**:
-its history contains a recovered vendor AES key and a decrypted firmware blob.
-Do not push `birddog-re` anywhere, and do not copy key material or vendor
-firmware into this repo.
+`~/Projects/birddog-re` — a **private** repo, and it must stay private: its
+history contains a recovered vendor AES key and a decrypted firmware blob.
+Never make it public, and never copy key material or vendor firmware into this
+repo, which is public.
 
 `birddog-re`'s `tools/fwbuild` builds the installable `.fw` and finds this
 repo's binary at `../bdcam/dist/bdcam-linux-arm64` (override with `BDCAM=`).
@@ -35,9 +35,10 @@ So the two repos are expected to be **sibling checkouts** under `~/Projects`.
    the NDI frame struct has no check on the far side at all, and a mistake there
    is a garbled frame or a crash inside libndi. `TestIoctlStructSizes` and
    `TestNDIStructSizes` are the cheap version of finding out.
-4. **This repo is private and should stay private** unless someone deliberately
-   reviews it first. It documents an unauthenticated REST API, the SSH port and
-   the update path on a shipping commercial product.
+4. **This repo is public.** Nothing here may carry vendor key material, vendor
+   firmware, or anything copied out of an SDK. It does describe the PLAY's
+   unauthenticated REST API and SSH port — as the equally public
+   `birddog-play-patcher` already does — but that is the limit.
 
 ## Toolchain
 
