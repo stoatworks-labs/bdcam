@@ -55,8 +55,90 @@ func main() {
 		output    = flag.String("output", "ndi", "outputs: ndi, srt, hdmi (comma separated; srt+hdmi may be combined)")
 		srtURL    = flag.String("srt-url", "", "srt://host:port[?streamid=..&passphrase=..&latency=ms]")
 		connector = flag.Int("connector", 0, "DRM connector id for hdmi output (0 = let kmssink choose)")
+		serve     = flag.String("serve", "", "run the configuration API on this address (e.g. :8090) instead of streaming")
+		confPath  = flag.String("config", "", "read settings from this JSON file; explicit flags still win")
+		unit      = flag.String("unit", "bd-cam", "systemd unit the API restarts to apply settings")
+		logPath   = flag.String("log", "", "log file the API exposes via /api/log")
+		patchUI   = flag.String("patch-ui", "", "add the UVC Converter tab to the web UI in this directory (e.g. /srv/birddog-web-ui)")
+		unpatchUI = flag.String("unpatch-ui", "", "remove the UVC Converter tab from the web UI in this directory")
 	)
 	flag.Parse()
+
+	// Which flags the user actually typed, so config.json can fill in the rest
+	// without silently overriding an explicit argument.
+	set := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
+
+	if *patchUI != "" {
+		if err := PatchWebUI(*patchUI); err != nil {
+			logf("FATAL: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if *unpatchUI != "" {
+		if err := UnpatchWebUI(*unpatchUI); err != nil {
+			logf("FATAL: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if *serve != "" {
+		api := &APIServer{ConfigPath: *confPath, LogPath: *logPath, Unit: *unit}
+		if api.ConfigPath == "" {
+			api.ConfigPath = "config.json"
+		}
+		if err := api.ListenAndServe(*serve); err != nil {
+			logf("FATAL: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if *confPath != "" {
+		c, err := LoadConfig(*confPath)
+		if err != nil {
+			logf("FATAL: %v", err)
+			os.Exit(2)
+		}
+		if !c.Enabled {
+			logf("converter is disabled in %s — nothing to do", *confPath)
+			os.Exit(0)
+		}
+		if err := c.Validate(); err != nil {
+			logf("FATAL: %s: %v", *confPath, err)
+			os.Exit(2)
+		}
+		if !set["output"] {
+			*output = c.Outputs
+		}
+		if !set["size"] {
+			*size = fmt.Sprintf("%dx%d", c.Width, c.Height)
+		}
+		if !set["fps"] {
+			*fps = c.FPS
+		}
+		if !set["format"] && c.Format != "" {
+			*format = c.Format
+		}
+		if !set["device"] && c.Device != "" {
+			*device = c.Device
+		}
+		if !set["name"] && c.NDIName != "" {
+			*name = c.NDIName
+		}
+		if !set["srt-url"] && c.SRTURL != "" {
+			*srtURL = c.SRTURL
+		}
+		if !set["connector"] && c.Connector > 0 {
+			*connector = c.Connector
+		}
+		if !set["synthetic"] && c.Synthetic {
+			*synthetic = true
+		}
+		logf("loaded %s", *confPath)
+	}
 
 	if *list {
 		for _, d := range findVideoDevices() {

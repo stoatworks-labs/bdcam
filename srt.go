@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	srt "github.com/datarhei/gosrt"
@@ -29,20 +30,23 @@ type SRTSender struct {
 	target  string
 }
 
-// DialSRT connects to srt://host:port[?streamid=..&passphrase=..&latency=ms].
-func DialSRT(raw string) (*SRTSender, error) {
-	u, err := url.Parse(raw)
+// parseSRTTarget validates and splits an SRT url without opening anything, so
+// configuration can be checked before it is saved.
+func parseSRTTarget(raw string) (string, srt.Config, error) {
+	cfg := srt.DefaultConfig()
+	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
-		return nil, fmt.Errorf("bad SRT url %q: %w", raw, err)
+		return "", cfg, fmt.Errorf("bad SRT url %q: %w", raw, err)
 	}
 	if u.Scheme != "srt" {
-		return nil, fmt.Errorf("SRT url must start with srt://, got %q", u.Scheme)
+		return "", cfg, fmt.Errorf("SRT url must start with srt://, got %q", u.Scheme)
+	}
+	if u.Hostname() == "" {
+		return "", cfg, fmt.Errorf("SRT url needs a host: %q", raw)
 	}
 	if u.Port() == "" {
-		return nil, fmt.Errorf("SRT url needs an explicit port: %q", raw)
+		return "", cfg, fmt.Errorf("SRT url needs an explicit port: %q", raw)
 	}
-
-	cfg := srt.DefaultConfig()
 	q := u.Query()
 	if v := q.Get("streamid"); v != "" {
 		cfg.StreamId = v
@@ -52,12 +56,21 @@ func DialSRT(raw string) (*SRTSender, error) {
 	}
 	if v := q.Get("latency"); v != "" {
 		ms, err := strconv.Atoi(v)
-		if err != nil {
-			return nil, fmt.Errorf("bad latency %q: %w", v, err)
+		if err != nil || ms < 0 {
+			return "", cfg, fmt.Errorf("bad latency %q: want milliseconds", v)
 		}
 		cfg.Latency = time.Duration(ms) * time.Millisecond
 	}
 	cfg.PayloadSize = srtPayloadSize
+	return u.Host, cfg, nil
+}
+
+// DialSRT connects to srt://host:port[?streamid=..&passphrase=..&latency=ms].
+func DialSRT(raw string) (*SRTSender, error) {
+	addr, cfg, err := parseSRTTarget(raw)
+	if err != nil {
+		return nil, err
+	}
 
 	// gosrt's default Latency is negative, meaning "defer to the peer". Saying
 	// "latency=-1ns" in the log is just confusing.
@@ -66,7 +79,6 @@ func DialSRT(raw string) (*SRTSender, error) {
 		lat = cfg.Latency.String()
 	}
 
-	addr := u.Host
 	conn, err := srt.Dial("srt", addr, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("SRT dial %s: %w", addr, err)
