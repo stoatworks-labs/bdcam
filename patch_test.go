@@ -136,3 +136,17 @@ func TestRealTemplateIfAvailable(t *testing.T) {
 		t.Error("unpatching the real template did not restore it byte for byte")
 	}
 }
+
+func TestAssetURLIsVersioned(t *testing.T) {
+	out, err := PatchVideoset(miniTemplate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Without a versioned URL a JS change is invisible behind the browser cache.
+	if !strings.Contains(out, "/static/uvc-converter.js?v=") {
+		t.Errorf("script URL is not cache-busted: %s", out)
+	}
+	if len(assetVersion()) != 8 {
+		t.Errorf("asset version %q should be 8 hex chars", assetVersion())
+	}
+}

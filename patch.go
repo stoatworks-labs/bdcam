@@ -18,7 +18,9 @@ package main
 // small blocks and means UI changes never risk the parse.
 
 import (
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -46,10 +48,21 @@ const tabButtonHTML = patchStart +
 // The tab body. Empty on purpose — the script fills it in. It starts hidden so
 // it does not appear alongside the decode settings on load; opendecTab reveals
 // it, exactly as it does for dec1_form.
-const tabContentHTML = patchStart +
+//
+// The script URL carries a hash of the asset. Browsers cache /static/ hard, and
+// without this a JS change is invisible until someone thinks to force-reload —
+// which is exactly the sort of thing that gets misdiagnosed as a broken page.
+var tabContentHTML = patchStart +
 	`<div class="dectabcontent" id="uvc_form" style="display:none;"></div>` +
-	`<script src="/static/uvc-converter.js"></script>` +
+	`<script src="/static/uvc-converter.js?v=` + assetVersion() + `"></script>` +
 	patchEnd
+
+// assetVersion is a short content hash of the embedded JS, so the URL changes
+// whenever the file does and stays identical when it does not.
+func assetVersion() string {
+	sum := sha256.Sum256([]byte(uvcConverterJS))
+	return hex.EncodeToString(sum[:4])
+}
 
 // IsPatched reports whether the tab has already been added.
 func IsPatched(src string) bool { return strings.Contains(src, patchStart) }
