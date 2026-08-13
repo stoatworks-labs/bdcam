@@ -53,6 +53,15 @@ func base() PipelineConfig {
 		Pixfmt: pixNV12, Out: Outputs{SRT: true}}
 }
 
+// raw returns a config whose only branch is the raw one, as NDI or the display
+// sink would ask for.
+func rawOnly() PipelineConfig {
+	c := base()
+	c.Out = Outputs{}
+	c.Raw = true
+	return c
+}
+
 func TestMJPEGUsesHardwareDecode(t *testing.T) {
 	c := base()
 	c.Pixfmt = pixMJPG
@@ -102,7 +111,8 @@ func TestSRTBranchIsByteStreamAU(t *testing.T) {
 
 func TestCombinedOutputsTee(t *testing.T) {
 	c := base()
-	c.Out = Outputs{SRT: true, HDMI: true}
+	c.Out = Outputs{SRT: true}
+	c.Raw = true
 	got := args(t, c)
 	if !strings.Contains(got, "tee name=t") {
 		t.Errorf("combined outputs need a tee: %s", got)
@@ -110,55 +120,34 @@ func TestCombinedOutputsTee(t *testing.T) {
 	if strings.Count(got, "t.") < 2 {
 		t.Errorf("tee should feed two branches: %s", got)
 	}
-	if !strings.Contains(got, "kmssink") || !strings.Contains(got, "mpph264enc") {
+	if !strings.Contains(got, "mpph264enc") || !strings.Contains(got, "format=I420") {
 		t.Errorf("both branches should be present: %s", got)
 	}
 }
 
-// Without a conversion to NV12 the VOP cannot scan out what jpegdec produces,
-// and the whole pipeline fails negotiation at the source.
-func TestHDMIBranchConvertsToNV12(t *testing.T) {
-	c := base()
-	c.Out = Outputs{HDMI: true}
-	got := args(t, c)
-	if !strings.Contains(got, "videoconvert") || !strings.Contains(got, "format=NV12") {
-		t.Errorf("HDMI branch must convert to NV12 for the VOP: %s", got)
+// kmssink lives in its own process now, fed NV12 we pack ourselves, because
+// GStreamer's conversion to NV12 runs at 1.8 fps here against 24 fps to I420.
+func TestMainPipelineHasNoDisplayBranch(t *testing.T) {
+	got := args(t, rawOnly())
+	if strings.Contains(got, "kmssink") {
+		t.Errorf("kmssink belongs in the display process, not the capture pipeline: %s", got)
 	}
-	if strings.Index(got, "videoconvert") > strings.Index(got, "kmssink") {
-		t.Errorf("the conversion must come before kmssink: %s", got)
+	if !strings.Contains(got, "format=I420") {
+		t.Errorf("the raw branch should stop at I420: %s", got)
 	}
 }
 
 // The whole point of routing NDI through GStreamer: one camera, several
 // outputs, which the direct V4L2 path could never do.
-func TestNDIAndHDMITogether(t *testing.T) {
-	c := base()
-	c.Out = Outputs{NDI: true, HDMI: true}
-	got := args(t, c)
-	if !strings.Contains(got, "tee name=t") {
-		t.Errorf("combined outputs need a tee: %s", got)
-	}
-	if !strings.Contains(got, "kmssink") {
-		t.Errorf("HDMI branch missing: %s", got)
-	}
-	// NDI takes UYVY, which is what libndi wants, on its own descriptor so it
-	// does not collide with SRT's H.264 on stdout.
-	// I420 rather than UYVY: measured 24 fps against 1 fps for the same frames,
-	// because jpegdec's 4:2:2 output has a fast path only to I420 here.
-	if !strings.Contains(got, "format=I420") || !strings.Contains(got, "fd=3") {
-		t.Errorf("NDI branch should emit I420 on fd 3: %s", got)
-	}
-	if strings.Contains(got, "mpph264enc") {
-		t.Errorf("no encoder should appear without SRT: %s", got)
-	}
-}
-
 func TestAllThreeOutputs(t *testing.T) {
 	c := base()
 	c.Out = Outputs{NDI: true, SRT: true, HDMI: true}
+	c.Raw = true
 	got := args(t, c)
-	if strings.Count(got, "t.") != 3 {
-		t.Errorf("expected three tee branches: %s", got)
+	// Two branches, not three: SRT's encoder, and one raw branch feeding both
+	// NDI and the display.
+	if strings.Count(got, "t.") != 2 {
+		t.Errorf("expected two tee branches: %s", got)
 	}
 	// SRT keeps stdout, NDI has fd 3 — they must not share a descriptor.
 	if !strings.Contains(got, "fd=1") || !strings.Contains(got, "fd=3") {
@@ -167,8 +156,7 @@ func TestAllThreeOutputs(t *testing.T) {
 }
 
 func TestNDIAloneNeedsNoTee(t *testing.T) {
-	c := base()
-	c.Out = Outputs{NDI: true}
+	c := rawOnly()
 	got := args(t, c)
 	if strings.Contains(got, "tee") {
 		t.Errorf("a single output should not be tee'd: %s", got)
@@ -179,26 +167,9 @@ func TestNDIAloneNeedsNoTee(t *testing.T) {
 }
 
 func TestHDMIOnlyHasNoEncoder(t *testing.T) {
-	c := base()
-	c.Out = Outputs{HDMI: true}
-	got := args(t, c)
+	got := args(t, rawOnly())
 	if strings.Contains(got, "mpph264enc") {
 		t.Errorf("HDMI alone should not encode: %s", got)
-	}
-	if !strings.Contains(got, "kmssink") {
-		t.Errorf("HDMI needs kmssink: %s", got)
-	}
-}
-
-func TestConnectorIDOnlyWhenSet(t *testing.T) {
-	c := base()
-	c.Out = Outputs{HDMI: true}
-	if strings.Contains(args(t, c), "connector-id") {
-		t.Error("connector-id should be omitted so kmssink picks one")
-	}
-	c.ConnectorID = 42
-	if !strings.Contains(args(t, c), "connector-id=42") {
-		t.Error("connector-id should be passed through when set")
 	}
 }
 
@@ -218,6 +189,7 @@ func TestEncoderResolutionCeiling(t *testing.T) {
 
 func TestSyntheticNeedsNoCamera(t *testing.T) {
 	c := base()
+	c.Raw = true
 	c.Synthetic = true
 	got := args(t, c)
 	if strings.Contains(got, "v4l2src") {
@@ -231,6 +203,7 @@ func TestSyntheticNeedsNoCamera(t *testing.T) {
 func TestNoOutputsIsAnError(t *testing.T) {
 	c := base()
 	c.Out = Outputs{}
+	c.Raw = false
 	if _, err := gstArgs(c); err == nil {
 		t.Fatal("a pipeline with no outputs should be rejected")
 	}

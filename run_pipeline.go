@@ -80,7 +80,11 @@ func runPipeline(cfg runConfig) error {
 		defer restore()
 	}
 
+	directHDMI := cfg.out.HDMI && cfg.hdmiMode == "direct"
+	wantRaw := cfg.out.NDI || directHDMI
+
 	args, err := gstArgs(PipelineConfig{
+		Raw:          wantRaw,
 		Synthetic:    cfg.synthetic,
 		Device:       dev,
 		Width:        cfg.width,
@@ -123,19 +127,27 @@ func runPipeline(cfg runConfig) error {
 		return pl.Wait()
 	}
 
-	// NDI reads raw UYVY off the second pipe, in its own goroutine so it runs
-	// alongside SRT rather than instead of it.
-	var ndiDone chan struct{}
-	if cfg.out.NDI {
-		ndiDone = make(chan struct{})
+	// One reader takes the raw frames and feeds whichever consumers are on,
+	// in its own goroutine so it runs alongside SRT rather than instead of it.
+	var rawDone chan struct{}
+	if wantRaw {
+		var display *DisplaySink
+		if directHDMI {
+			display, err = StartDisplaySink(cfg.width, cfg.height, cfg.fps, cfg.connector)
+			if err != nil {
+				return err
+			}
+			defer display.Close()
+		}
+		rawDone = make(chan struct{})
 		go func() {
-			defer close(ndiDone)
-			if err := pumpNDI(cfg, pl.Raw); err != nil {
-				logf("NDI output stopped: %v", err)
+			defer close(rawDone)
+			if err := pumpRaw(cfg, pl.Raw, display); err != nil {
+				logf("raw output stopped: %v", err)
 			}
 		}()
 		if !cfg.out.SRT {
-			// Nothing to read on stdout; wait for the NDI pump or the pipeline.
+			// Nothing to read on stdout; wait for the pump or the pipeline.
 			if cfg.duration > 0 {
 				go func() {
 					time.Sleep(cfg.duration)
@@ -143,7 +155,7 @@ func runPipeline(cfg runConfig) error {
 					_ = pl.Close()
 				}()
 			}
-			<-ndiDone
+			<-rawDone
 			return pl.Wait()
 		}
 	}
@@ -221,79 +233,6 @@ func pipelineOutputs(cfg runConfig) Outputs {
 
 var errStop = fmt.Errorf("stop requested")
 
-// pumpNDI reads whole raw frames from the pipeline and sends them as NDI. The
-// frames are fixed size, so the framing is just "read exactly this many bytes"
-// — no parsing, and no copy beyond the read itself, since UYVY is what libndi
-// takes directly.
-func pumpNDI(cfg runConfig, r io.Reader) error {
-	ndi, err := LoadNDI(cfg.ndiLib)
-	if err != nil {
-		return err
-	}
-	defer ndi.Close()
-	send, err := ndi.NewSender(cfg.name, cfg.clock)
-	if err != nil {
-		return err
-	}
-	defer send.Close()
-	logf("sending as %q (from the shared capture, %d/1 fps declared)", send.SourceName(), cfg.fps)
-
-	if cfg.out.HDMI && cfg.hdmiMode != "direct" {
-		restore := pointDecoderAt(send.SourceName(), send.SourceURL())
-		defer restore()
-	}
-
-	// The pipeline hands over I420 because that is the only conversion this
-	// GStreamer does quickly, and the packing to UYVY is finished here — see
-	// i420ToUYVY. UYVY is also the format this device is known to send
-	// correctly; I420 straight to libndi produced a green picture.
-	frameSize := cfg.width * cfg.height * 3 / 2
-	buf := make([]byte, frameSize)
-
-	// Which layout to hand libndi. UYVY is the safe default, but the PLAY's own
-	// decoder renders NV12 natively — its display path was built around the
-	// hardware decoder's output — so nv12 is what makes the loopback HDMI route
-	// look right.
-	var packed []byte
-	var pack func() error
-	f := Frame{Width: cfg.width, Height: cfg.height}
-	switch cfg.ndiFormat {
-	case "nv12":
-		packed = make([]byte, frameSize)
-		f.FourCC, f.Stride, f.Data = fourCCNV12, cfg.width, packed
-		pack = func() error { return i420ToNV12(buf, packed, cfg.width, cfg.height) }
-	default:
-		packed = make([]byte, cfg.width*cfg.height*2)
-		f.FourCC, f.Stride, f.Data = fourCCUYVY, cfg.width*2, packed
-		pack = func() error { return i420ToUYVY(buf, packed, cfg.width, cfg.height) }
-	}
-	logf("ndi pixel format: %s", fourCCName(f.FourCC))
-
-	var frames int
-	start := time.Now()
-	last := start
-	atLast := 0
-	for {
-		if _, err := io.ReadFull(r, buf); err != nil {
-			if err == io.EOF || err == io.ErrUnexpectedEOF {
-				logf("raw frame pipe closed after %d frames", frames)
-				return nil
-			}
-			return err
-		}
-		if err := pack(); err != nil {
-			return err
-		}
-		send.SendVideo(&f, cfg.fps, 1)
-		frames++
-		if now := time.Now(); now.Sub(last) >= cfg.statsEach {
-			w := now.Sub(last).Seconds()
-			logf("ndi: frames=%d fps=%.2f conns=%d", frames, float64(frames-atLast)/w, send.Connections())
-			last, atLast = now, frames
-		}
-	}
-}
-
 // nearestRate picks the supported frame rate closest to what was asked for,
 // preferring the higher one when a request sits exactly between two.
 func nearestRate(rates []int, want int) int {
@@ -311,6 +250,112 @@ func abs(n int) int {
 		return -n
 	}
 	return n
+}
+
+// pumpRaw reads whole I420 frames from the pipeline and feeds them to whichever
+// consumers are enabled. The frames are fixed size, so the framing is just
+// "read exactly this many bytes" — no parsing.
+//
+// Both conversions live here rather than in GStreamer because its NV12 and UYVY
+// paths are the slow generic ones on this hardware; from I420 they are a copy
+// and an interleave.
+func pumpRaw(cfg runConfig, r io.Reader, display *DisplaySink) error {
+	frameSize := cfg.width * cfg.height * 3 / 2
+	buf := make([]byte, frameSize)
+
+	var send *Sender
+	var packed []byte
+	var pack func() error
+	var f Frame
+
+	if cfg.out.NDI {
+		ndi, err := LoadNDI(cfg.ndiLib)
+		if err != nil {
+			return err
+		}
+		defer ndi.Close()
+		send, err = ndi.NewSender(cfg.name, cfg.clock)
+		if err != nil {
+			return err
+		}
+		defer send.Close()
+
+		f = Frame{Width: cfg.width, Height: cfg.height}
+		switch cfg.ndiFormat {
+		case "nv12":
+			packed = make([]byte, frameSize)
+			f.FourCC, f.Stride, f.Data = fourCCNV12, cfg.width, packed
+			pack = func() error { return i420ToNV12(buf, packed, cfg.width, cfg.height) }
+		default:
+			packed = make([]byte, cfg.width*cfg.height*2)
+			f.FourCC, f.Stride, f.Data = fourCCUYVY, cfg.width*2, packed
+			pack = func() error { return i420ToUYVY(buf, packed, cfg.width, cfg.height) }
+		}
+		logf("sending as %q (from the shared capture, %d/1 fps declared, %s)",
+			send.SourceName(), cfg.fps, fourCCName(f.FourCC))
+
+		if cfg.out.HDMI && cfg.hdmiMode != "direct" {
+			restore := pointDecoderAt(send.SourceName(), send.SourceURL())
+			defer restore()
+		}
+	}
+
+	// The display sink wants NV12, which may or may not be what NDI asked for.
+	// When it is, the same buffer serves both and the frame is packed once.
+	var nv12 []byte
+	shareWithNDI := false
+	if display != nil {
+		if packed != nil && f.FourCC == fourCCNV12 {
+			nv12, shareWithNDI = packed, true
+		} else {
+			nv12 = make([]byte, frameSize)
+		}
+	}
+
+	var frames, dropped int
+	start := time.Now()
+	last := start
+	atLast := 0
+	for {
+		if _, err := io.ReadFull(r, buf); err != nil {
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				logf("raw frame pipe closed after %d frames", frames)
+				return nil
+			}
+			return err
+		}
+		if send != nil {
+			if err := pack(); err != nil {
+				return err
+			}
+			send.SendVideo(&f, cfg.fps, 1)
+		}
+		if display != nil {
+			if !shareWithNDI {
+				if err := i420ToNV12(buf, nv12, cfg.width, cfg.height); err != nil {
+					return err
+				}
+			}
+			if _, err := display.Write(nv12); err != nil {
+				// A dead display sink should not take the whole converter down.
+				dropped++
+				if dropped == 1 {
+					logf("display sink stopped accepting frames: %v", err)
+				}
+				display = nil
+			}
+		}
+		frames++
+		if now := time.Now(); now.Sub(last) >= cfg.statsEach {
+			w := now.Sub(last).Seconds()
+			conns := 0
+			if send != nil {
+				conns = send.Connections()
+			}
+			logf("raw: frames=%d fps=%.2f conns=%d", frames, float64(frames-atLast)/w, conns)
+			last, atLast = now, frames
+		}
+	}
 }
 
 // pickPipelineFormat prefers what costs least downstream. Unlike the NDI path
