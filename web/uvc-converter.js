@@ -59,7 +59,11 @@
               '<option value="0"' + (!current.enabled ? ' selected' : '') + '>Off</option>' +
               '<option value="1"' + (current.enabled ? ' selected' : '') + '>On</option></select>') +
           row('Output', '<select id="bdc_outputs">' + outOpts + '</select>') +
-          row('Camera', '<select id="bdc_device"></select>') +
+          row('Camera',
+              '<div style="display:flex;gap:6px;align-items:center;">' +
+                '<select id="bdc_device" style="flex:1;min-width:0;"></select>' +
+                '<button type="button" id="bdc_detect" class="restart" style="white-space:nowrap;padding:4px 10px;">DETECT</button>' +
+              '</div>') +
           row('Pixel format', '<select id="bdc_format">' + options(formats, current.format) + '</select>') +
           row('Resolution', '<select id="bdc_size">' + options(SIZES, size) + '</select>') +
           row('Frame rate', '<select id="bdc_fps">' + options(RATES, current.fps) + '</select>') +
@@ -86,6 +90,7 @@
 
     document.getElementById('bdc_outputs').addEventListener('change', onOutputsChange);
     document.getElementById('bdc_save').addEventListener('click', save);
+    document.getElementById('bdc_detect').addEventListener('click', detect);
     onOutputsChange();
     fillDevices();
     if (caps && caps.notes) {
@@ -124,22 +129,48 @@
     if (e) e.style.display = on ? '' : 'none';
   }
 
+  // Rescanning keeps whatever camera was already chosen, so pressing DETECT to
+  // check for a newly plugged device does not silently change the selection.
   function fillDevices() {
     var sel = document.getElementById('bdc_device');
-    if (!sel) return;
-    sel.innerHTML = '<option value="">Auto-detect</option>';
-    fetch(api + '/api/devices').then(r => r.json()).then(function (d) {
-      (d.devices || []).forEach(function (dev) {
+    if (!sel) return Promise.resolve(0);
+    var wanted = sel.value || current.device || '';
+    return fetch(api + '/api/devices').then(r => r.json()).then(function (d) {
+      var devices = d.devices || [];
+      sel.innerHTML = devices.length ? '<option value="">Auto-detect</option>'
+                                     : '<option value="">No camera detected</option>';
+      devices.forEach(function (dev) {
         var o = document.createElement('option');
         o.value = dev.path;
-        o.textContent = dev.path + (dev.formats ? ' (' + dev.formats.join(', ') + ')' : '');
-        if (current.device === dev.path) o.selected = true;
+        o.textContent = dev.path + (dev.formats && dev.formats.length ? ' (' + dev.formats.join(', ') + ')' : '');
+        if (wanted === dev.path) o.selected = true;
         sel.appendChild(o);
       });
-      if (!(d.devices || []).length) {
-        sel.innerHTML = '<option value="">No camera detected</option>';
+      return devices.length;
+    }).catch(function () { return -1; });
+  }
+
+  // The camera on this device is hot-pluggable and the streamer only looks for
+  // one when it starts, so being able to rescan without a reload is worth a
+  // button.
+  function detect() {
+    var b = document.getElementById('bdc_detect');
+    var label = b.textContent;
+    b.disabled = true;
+    b.textContent = '…';
+    setMsg('Scanning for cameras…', '');
+    fillDevices().then(function (n) {
+      b.disabled = false;
+      b.textContent = label;
+      if (n < 0) {
+        setMsg('Could not reach the converter service on port ' + API_PORT, 'error');
+      } else if (n === 0) {
+        setMsg('No camera detected. Check it is plugged into the USB-A port and powered — a bus-powered camera behind an unpowered hub often will not enumerate.', 'warn');
+      } else {
+        setMsg(n + (n === 1 ? ' camera' : ' cameras') + ' detected.', '');
       }
-    }).catch(function () { /* status panel reports the outage */ });
+      refreshStatus();
+    });
   }
 
   function setMsg(text, kind) {
