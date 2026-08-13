@@ -10,10 +10,12 @@ encoder, on the CPU); SRT and HDMI run on the device's own GStreamer, using the
 VEPU hardware H.264 encoder and `kmssink`. The compressed NDI|HX send path is
 still a later milestone (see [Roadmap](#roadmap)).
 
-**Verified on hardware, 2026-08-12**, on a PLAY running 1.0.30: NDI send, SRT
-out (validated by an independent demuxer) and HDMI via `kmssink` all work. The
-camera itself is still untested — no UVC device has yet enumerated on the unit,
-so every result so far used `--synthetic`.
+**Verified on hardware** on a PLAY running 1.0.30: NDI send, SRT out (validated
+by an independent demuxer) and HDMI via `kmssink` all work, and as of
+2026-08-13 so does **a real camera** — an ATEM Mini Extreme ISO, captured and
+sent live as NDI. Getting there needed three fixes the synthetic path could
+never have surfaced; see [cameras this kernel cannot see](#cameras-this-kernel-cannot-see-by-itself)
+and the sections after it.
 
 ## What the measurements said
 
@@ -157,8 +159,8 @@ bdcam --output srt,hdmi --srt-url srt://host:9000     # one capture, tee'd to bo
 ```
 
 SRT and HDMI are built on the device's own GStreamer, which carries exactly the
-elements needed: `mpph264enc` (the VEPU), `mppjpegdec` (hardware JPEG, so an
-MJPEG camera costs no CPU) and `kmssink`. Encoded H.264 comes back over a pipe,
+elements needed: `mpph264enc` (the VEPU), `mppjpegdec` (hardware JPEG, when the
+camera's chroma allows it — see below) and `kmssink`. Encoded H.264 comes back over a pipe,
 gets split into access units and muxed to MPEG-TS here — the device has no muxer
 at all, and its libsrt exists only statically linked inside `PPApp`, so neither
 could be borrowed.
@@ -250,7 +252,7 @@ what each costs us downstream:
 | UYVY | hands libndi the driver's mmap'd buffer | nothing |
 | YUYV | byte swap in place | negligible |
 | NV12 | hands libndi the buffer, NDI takes NV12 directly | nothing |
-| MJPEG | **software JPEG decode** (Go's `image/jpeg`) then pack to UYVY | very expensive |
+| MJPEG | **software JPEG decode** (Go's `image/jpeg`) then pack to UYVY | very expensive — measured at 3.9 fps for 1080p end to end |
 
 The MJPEG path is a placeholder and it is deliberately the last choice. On four
 A53s a 1080p JPEG decode in software is roughly a core on its own, taken from
