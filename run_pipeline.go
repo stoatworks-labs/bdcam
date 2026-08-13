@@ -248,6 +248,13 @@ func takeDisplay() func() {
 		logf("WARNING: could not stop BirdDogRunner (%v); kmssink will not get the display", err)
 		return func() {}
 	}
+	// A marker so the unit can put the display back if we are killed outright
+	// and never reach the restore below. It is deliberately specific: without
+	// it an ExecStopPost would fire on every restart of a disabled service and
+	// could fight someone who stopped BirdDogRunner on purpose.
+	if err := os.WriteFile(displayTakenMarker, []byte("bdcam\n"), 0o644); err != nil {
+		logf("note: could not write %s (%v); a hard kill will leave the display with the converter", displayTakenMarker, err)
+	}
 	// Give PPApp a moment to release card0 before kmssink asks for it.
 	time.Sleep(1500 * time.Millisecond)
 	return func() {
@@ -255,5 +262,10 @@ func takeDisplay() func() {
 		if err := exec.Command("systemctl", "start", "BirdDogRunner").Run(); err != nil {
 			logf("WARNING: could not restart BirdDogRunner (%v) — HDMI stays dark until it is started", err)
 		}
+		_ = os.Remove(displayTakenMarker)
 	}
 }
+
+// displayTakenMarker lives on tmpfs, so a reboot clears it — which is right,
+// since BirdDogRunner starts normally on boot anyway.
+const displayTakenMarker = "/run/bdcam-took-display"
