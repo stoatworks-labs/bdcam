@@ -318,5 +318,13 @@ free-SDK surface only.
 That covers distribution. It does not by itself settle *use* — running your own
 sender on a runtime licensed to someone else is a different question from
 shipping the library, and anything published would want its own Advanced SDK
-agreement. Experiment 1 above is partly how you find out which conversation you
-are in.
+agreement.
+
+**NDI|HX specifically.** The compressed-packet layout in `hx.go` is an
+independent reconstruction of a wire format, written from the Advanced SDK's
+published description so this code can interoperate with a library the user
+already has. No SDK source, header or sample is included or redistributed. That
+is a statement about this repository, not a licence: **using NDI|HX is between
+you and NDI**, and if you intend to ship an HX sender you want your own Advanced
+SDK agreement. The rest of the NDI surface here is free-SDK, which is the same
+ground every open-source NDI binding stands on.

@@ -10,11 +10,24 @@ package main
 // is_keyframe_required, wait_for_keyframe_request — are the give-away that this
 // runtime supports it.
 //
-// The struct below is reconstructed from the Advanced SDK's documented layout,
-// not from a header we hold, so it is the least certain code in this repo. If
-// it is wrong the likely symptom is a receiver that connects and sees nothing,
-// rather than a crash. TestCompressedPacketLayout pins the offsets so at least
-// the reconstruction is explicit and checkable.
+// On what this file is, and is not.
+//
+// The struct below is an INDEPENDENT RECONSTRUCTION of a wire/ABI layout,
+// written from the Advanced SDK's published description for the sole purpose of
+// interoperating with a library the user already has installed. It contains no
+// SDK source, no header, and no code copied from NDI or its licensees, and none
+// of the SDK is redistributed here or in anything this repo builds — bdcam
+// dlopens whatever libndi is already on the device.
+//
+// Using NDI|HX is between you and NDI: this code calls an interface, it does not
+// grant you a licence to it. If you intend to ship an HX sender, get your own
+// Advanced SDK agreement.
+//
+// Practically, it is also the least certain code in this repo: reconstructed
+// rather than declared, so a future libndi could move a field. The likely
+// symptom would be a receiver that connects and shows nothing rather than a
+// crash. TestCompressedPacketLayout pins the offsets so the reconstruction is
+// explicit and checkable rather than folklore.
 
 import "unsafe"
 
