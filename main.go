@@ -141,6 +141,7 @@ func main() {
 	}
 
 	if *list {
+		EnsureUVCBound()
 		for _, d := range findVideoDevices() {
 			s, err := Describe(d)
 			if err != nil {
@@ -237,7 +238,8 @@ func run(cfg runConfig) error {
 		logf("source: synthetic colour bars %dx%d", cfg.width, cfg.height)
 	} else {
 		dev := cfg.device
-		if dev == "" {
+		if dev == "" || !IsCaptureDevice(dev) {
+			EnsureUVCBound()
 			devs := findVideoDevices()
 			if len(devs) == 0 {
 				// No camera attached is an expected state, not a failure: the
@@ -245,6 +247,9 @@ func run(cfg runConfig) error {
 				// handled without a udev rule (same pattern as bdkvm).
 				logf("no /dev/video* capture device found — nothing to do")
 				os.Exit(0)
+			}
+			if dev != "" {
+				logf("configured device %s is not present; using %s", dev, devs[0])
 			}
 			dev = devs[0]
 		}

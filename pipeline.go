@@ -89,6 +89,10 @@ type PipelineConfig struct {
 	Out         Outputs
 	ConnectorID int
 	Synthetic   bool
+	// SoftwareJPEG forces the CPU JPEG decoder. The VPU's decoder aborts the
+	// process on anything that is not 4:2:0, so this is not optional for a
+	// 4:2:2 camera — see jpegprobe.go.
+	SoftwareJPEG bool
 }
 
 // gstArgs builds the gst-launch-1.0 argument list. Kept as a pure function so
@@ -114,9 +118,15 @@ func gstArgs(c PipelineConfig) ([]string, error) {
 
 	switch c.Pixfmt {
 	case pixMJPG:
-		// Hardware JPEG decode — this is why an MJPEG camera is affordable.
 		p = append(p, "!", fmt.Sprintf("image/jpeg,width=%d,height=%d,framerate=%d/1", c.Width, c.Height, c.FPS))
-		p = append(p, "!", "mppjpegdec")
+		if c.SoftwareJPEG {
+			// Costs roughly a core at 1080p, but mppjpegdec cannot do this
+			// camera's chroma format and crashes rather than declining.
+			p = append(p, "!", "jpegdec")
+		} else {
+			// Hardware JPEG decode — this is why an MJPEG camera is affordable.
+			p = append(p, "!", "mppjpegdec")
+		}
 	case pixNV12:
 		p = append(p, "!", fmt.Sprintf("video/x-raw,format=NV12,width=%d,height=%d,framerate=%d/1", c.Width, c.Height, c.FPS))
 	case pixYUYV, pixUYVY:

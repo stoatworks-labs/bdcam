@@ -138,6 +138,7 @@ type statusResponse struct {
 
 func (a *APIServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	c, _ := LoadConfig(a.ConfigPath)
+	EnsureUVCBound()
 	devs := findVideoDevices()
 	writeJSON(w, http.StatusOK, statusResponse{
 		Service:      a.Unit,
@@ -170,6 +171,10 @@ type deviceInfo struct {
 }
 
 func (a *APIServer) handleDevices(w http.ResponseWriter, r *http.Request) {
+	// Pressing DETECT should fix the common case, not just report it: a UVC 1.5
+	// camera is invisible to this kernel until it is given a dynamic id, and
+	// that is lost on every reboot.
+	EnsureUVCBound()
 	var out []deviceInfo
 	for _, d := range findVideoDevices() {
 		info := deviceInfo{Path: d}

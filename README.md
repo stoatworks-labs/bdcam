@@ -192,6 +192,54 @@ round trip, but both ends are hardware (VEPU out, rkvdec back in at 218 fps), an
 it keeps the OSD, web UI, tally and CloudConnect intact. For a device that
 should still behave like a PLAY, that is usually the better trade.
 
+## Cameras this kernel cannot see by itself
+
+The PLAY runs kernel 4.4.194 with "USB Video Class driver (1.1.1)", whose device
+table only matches `bInterfaceProtocol 0x00` — UVC 1.0 and 1.1. **A UVC 1.5
+camera declares protocol 0x01 and is ignored entirely**: no `/dev/video` node,
+no error in the kernel log, and a manual bind that fails just as silently.
+
+`bdcam` handles this itself. Whenever it looks for a camera — at startup, on
+`--list`, and behind the tab's DETECT button — it scans for unclaimed
+video-class interfaces whose protocol byte is the reason and hands uvcvideo a
+dynamic id for them. Those ids live in the driver and are **lost on every
+reboot**, which is why it is done on demand rather than once by hand.
+
+Verified on an ATEM Mini Extreme ISO (`1edb:be83`), which the kernel then
+reports as "Found UVC 1.50 device" and streams 1080p MJPEG.
+
+## The VPU JPEG decoder cannot do 4:2:2
+
+`mppjpegdec` handles 4:2:0 only. Fed anything else it **aborts the process** —
+`mpp_buffer_put invalid input: buffer (nil)` followed by a heap error — rather
+than declining politely. The ATEM emits 4:2:2 (luma sampling `0x21`), so it
+crashes the pipeline outright.
+
+`bdcam` therefore grabs one frame before building the pipeline and reads the
+sampling factors out of the JPEG header. 4:2:0 takes the hardware path;
+anything else falls back to software decode and says so in the log. Trailing
+padding is not the problem — the ATEM pads every frame to a fixed 142144 bytes,
+and a trimmed frame crashes the hardware decoder just the same.
+
+## Measured on a real camera
+
+1080p MJPEG from an ATEM Mini Extreme ISO, on an otherwise idle unit:
+
+| Path | Throughput |
+|---|---|
+| software `jpegdec` alone | 43.7 fps |
+| `jpegdec` → VEPU H.264 (the SRT/HDMI path) | 19.6 fps |
+| Go's `image/jpeg` → SpeedHQ (the NDI path) | 3.9 fps |
+
+Two things follow. **The VEPU is the limit for SRT and HDMI at 1080p** — about
+28 ms per frame, so roughly 20 fps once decode is competing with it. And **Go's
+`image/jpeg` is about ten times slower than libjpeg-turbo here**, which makes
+the NDI path unusable with an MJPEG camera at 1080p; it needs to move onto
+GStreamer's decoder, hardware or not.
+
+Note the camera only offers 1920x1080, so dropping to 720p to buy frame rate is
+not available with this source.
+
 ## Capture formats, and why the choice matters
 
 `--format auto` (the default) picks in this order, which is strictly an order of

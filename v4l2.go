@@ -494,3 +494,29 @@ func EnumFormats(path string) ([]uint32, error) {
 	}
 	return out, nil
 }
+
+// SupportedRates lists the discrete frame rates a device offers for a format
+// and size. Continuous or stepwise ranges return nil: the caller should then
+// not pin a rate at all.
+func SupportedRates(path string, pixfmt uint32, width, height int) ([]int, error) {
+	fd, err := syscall.Open(path, syscall.O_RDWR|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer syscall.Close(fd)
+	var out []int
+	for i := 0; ; i++ {
+		var fi v4l2Frmivalenum
+		fi.Index = uint32(i)
+		fi.PixelFormat = pixfmt
+		fi.Width, fi.Height = uint32(width), uint32(height)
+		if err := ioctl(fd, vidiocEnumFrameintervals, unsafe.Pointer(&fi)); err != nil {
+			break
+		}
+		if fi.Type != frmivalTypeDiscrete || fi.Numerator == 0 {
+			return nil, nil
+		}
+		out = append(out, int(fi.Denominator/fi.Numerator))
+	}
+	return out, nil
+}

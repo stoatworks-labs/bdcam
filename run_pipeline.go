@@ -16,15 +16,20 @@ import (
 func runPipeline(cfg runConfig) error {
 	var dev string
 	var pixfmt uint32
+	var softwareJPEG bool
 	if cfg.synthetic {
 		logf("source: synthetic %dx%d@%d -> %s", cfg.width, cfg.height, cfg.fps, cfg.out)
 	} else {
 		dev = cfg.device
-		if dev == "" {
+		if dev == "" || !IsCaptureDevice(dev) {
+			EnsureUVCBound()
 			devs := findVideoDevices()
 			if len(devs) == 0 {
 				logf("no /dev/video* capture device found — nothing to do")
 				os.Exit(0)
+			}
+			if dev != "" {
+				logf("configured device %s is not present; using %s", dev, devs[0])
 			}
 			dev = devs[0]
 		}
@@ -39,6 +44,30 @@ func runPipeline(cfg runConfig) error {
 				return err
 			}
 		}
+		// A rate the camera does not offer fails caps negotiation with an
+		// opaque "not-negotiated", so snap to something it actually supports.
+		if rates, err := SupportedRates(dev, pixfmt, cfg.width, cfg.height); err == nil && len(rates) > 0 {
+			if best := nearestRate(rates, cfg.fps); best != cfg.fps {
+				logf("camera does not offer %d fps at %dx%d (it offers %v) — using %d",
+					cfg.fps, cfg.width, cfg.height, rates, best)
+				cfg.fps = best
+			}
+		}
+
+		// The VPU JPEG decoder aborts the process on anything but 4:2:0, so
+		// find out before building a pipeline around it.
+		if pixfmt == pixMJPG {
+			if chroma, err := probeCameraChroma(dev, cfg.width, cfg.height, cfg.fps); err != nil {
+				logf("could not read the camera's JPEG chroma (%v) — assuming software decode", err)
+				softwareJPEG = true
+			} else if !chroma.HardwareDecodable() {
+				logf("camera emits %s MJPEG; the VPU decoder only handles 4:2:0, so decoding on the CPU (about a core at 1080p)", chroma)
+				softwareJPEG = true
+			} else {
+				logf("camera emits %s MJPEG — hardware decode", chroma)
+			}
+		}
+
 		logf("source: %s %dx%d@%d %s -> %s", dev, cfg.width, cfg.height, cfg.fps, fourCCName(pixfmt), cfg.out)
 	}
 
@@ -47,14 +76,15 @@ func runPipeline(cfg runConfig) error {
 	}
 
 	args, err := gstArgs(PipelineConfig{
-		Synthetic:   cfg.synthetic,
-		Device:      dev,
-		Width:       cfg.width,
-		Height:      cfg.height,
-		FPS:         cfg.fps,
-		Pixfmt:      pixfmt,
-		Out:         cfg.out,
-		ConnectorID: cfg.connector,
+		Synthetic:    cfg.synthetic,
+		Device:       dev,
+		Width:        cfg.width,
+		Height:       cfg.height,
+		FPS:          cfg.fps,
+		Pixfmt:       pixfmt,
+		Out:          cfg.out,
+		ConnectorID:  cfg.connector,
+		SoftwareJPEG: softwareJPEG,
 	})
 	if err != nil {
 		return err
@@ -153,6 +183,25 @@ func runPipeline(cfg runConfig) error {
 }
 
 var errStop = fmt.Errorf("stop requested")
+
+// nearestRate picks the supported frame rate closest to what was asked for,
+// preferring the higher one when a request sits exactly between two.
+func nearestRate(rates []int, want int) int {
+	best := rates[0]
+	for _, r := range rates {
+		if d, bd := abs(r-want), abs(best-want); d < bd || (d == bd && r > best) {
+			best = r
+		}
+	}
+	return best
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
+}
 
 // pickPipelineFormat prefers what costs least downstream. Unlike the NDI path
 // this ranks NV12 first (the encoder takes it directly) and MJPEG second (the
