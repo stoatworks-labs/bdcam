@@ -243,3 +243,26 @@ func TestTailLines(t *testing.T) {
 		t.Error("a missing log should yield nil, not an error")
 	}
 }
+
+// The decoder displays our NDI feed, and only renders HX correctly — full
+// bandwidth comes out green on this firmware.
+func TestDecoderHDMIRequiresHX(t *testing.T) {
+	c := validConfig()
+	c.Outputs, c.HDMIMode = "ndi,hdmi", "decoder"
+
+	c.NDIFormat = "uyvy"
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "HX") {
+		t.Errorf("full-bandwidth NDI through the decoder should be refused, got %v", err)
+	}
+
+	c.NDIFormat = "h264"
+	if err := c.Validate(); err != nil {
+		t.Errorf("HX through the decoder should be allowed: %v", err)
+	}
+
+	// Direct HDMI works with any format.
+	c.HDMIMode, c.NDIFormat = "direct", "uyvy"
+	if err := c.Validate(); err != nil {
+		t.Errorf("direct HDMI should not care about the NDI format: %v", err)
+	}
+}

@@ -61,9 +61,13 @@
               box('bdc_out_srt', 'srt', 'SRT', '— H.264 from the hardware encoder') +
               box('bdc_out_hdmi', 'hdmi', 'HDMI', '— straight to the panel') +
               '<div id="bdc_out_hint" style="font-size:11px;opacity:.7;margin-top:3px;"></div>') +
+          row('NDI mode', '<select id="bdc_ndiformat">' +
+              '<option value="h264"' + (current.ndi_format === 'h264' ? ' selected' : '') + '>NDI|HX — hardware H.264, 30 fps, ~2 Mbps</option>' +
+              '<option value="uyvy"' + (current.ndi_format !== 'h264' ? ' selected' : '') + '>Full bandwidth — SpeedHQ on the CPU, ~18 fps</option>' +
+              '</select>', 'bdc_row_ndiformat') +
           row('HDMI via', '<select id="bdc_hdmimode">' +
               '<option value="direct"' + (current.hdmi_mode !== 'decoder' ? ' selected' : '') + '>Direct — takes the display from the decoder</option>' +
-              '<option value="decoder"' + (current.hdmi_mode === 'decoder' ? ' selected' : '') + '>Via the decoder — not working on this firmware</option>' +
+              '<option value="decoder"' + (current.hdmi_mode === 'decoder' ? ' selected' : '') + '>Via the decoder — keeps the OSD and web UI (needs HX)</option>' +
               '</select>', 'bdc_row_hdmimode') +
           row('Camera',
               '<div style="display:flex;gap:6px;align-items:center;">' +
@@ -101,6 +105,8 @@
     document.getElementById('bdc_save').addEventListener('click', save);
     var hm = document.getElementById('bdc_hdmimode');
     if (hm) hm.addEventListener('change', onOutputsChange);
+    var nf = document.getElementById('bdc_ndiformat');
+    if (nf) nf.addEventListener('change', onOutputsChange);
     document.getElementById('bdc_detect').addEventListener('click', detect);
     onOutputsChange();
     fillDevices();
@@ -138,6 +144,7 @@
   function onOutputsChange() {
     var v = selectedOutputs();
     show('bdc_row_ndi', v.indexOf('ndi') !== -1);
+    show('bdc_row_ndiformat', v.indexOf('ndi') !== -1);
     show('bdc_row_srt', v.indexOf('srt') !== -1);
     show('bdc_row_hdmimode', v.indexOf('hdmi') !== -1);
 
@@ -151,8 +158,11 @@
     var warn = '';
     var mode = (document.getElementById('bdc_hdmimode') || {}).value;
     if (v.indexOf('hdmi') !== -1) {
+      var hx = (document.getElementById('bdc_ndiformat') || {}).value === 'h264';
       if (mode === 'decoder') {
-        warn = 'The decoder route renders green on this firmware — PPApp does not display our stream correctly. Use Direct.';
+        warn = hx
+          ? 'The decoder displays the NDI stream, so nothing is taken from it — the OSD, web UI and tally keep working. Costs an encode and a decode of latency.'
+          : 'HDMI through the decoder needs NDI set to HX: the decoder renders full-bandwidth NDI green on this firmware.';
       } else {
         // Both costs are real and measured; people should know before they
         // turn it on and wonder why everything slowed down.
@@ -241,7 +251,8 @@
       ndi_name: document.getElementById('bdc_ndiname').value,
       srt_url: document.getElementById('bdc_srturl').value,
       synthetic: document.getElementById('bdc_synthetic').value === '1',
-      hdmi_mode: (document.getElementById('bdc_hdmimode') || {}).value || 'decoder',
+      hdmi_mode: (document.getElementById('bdc_hdmimode') || {}).value || 'direct',
+      ndi_format: (document.getElementById('bdc_ndiformat') || {}).value || 'h264',
       connector: current.connector || 0
     };
     setMsg('Applying…', '');

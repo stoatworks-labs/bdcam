@@ -200,6 +200,7 @@ func (a *APIServer) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		"hdmi_modes":         []string{"direct", "decoder"},
 		"hdmi_reduces_rate":  true,
 		"formats":            []string{"auto", "nv12", "mjpeg", "yuyv", "uyvy"},
+		"ndi_formats":        []string{"h264", "uyvy", "nv12"},
 		"max_width":          1920,
 		"max_height":         1088,
 		"max_fps":            60,
@@ -208,8 +209,10 @@ func (a *APIServer) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"SRT and HDMI encode on the VEPU via mpph264enc, which exposes no bitrate, GOP or rate-control setting in this firmware — it derives a bitrate from the resolution and frame rate.",
 			"All outputs share one capture, so any combination can run at once.",
 			"Direct HDMI uses kmssink, which needs DRM master, so the decoder is stopped for as long as the converter runs — no OSD, no web UI video, no tally until it is switched off.",
-			"Switching HDMI on lowers the frame rate of every output. The display needs a second colour conversion per frame on the CPU, and with a 4:2:2 MJPEG camera the hardware JPEG decoder cannot help either. Measured at about 11 fps at 1080p with NDI running alongside, against about 18 fps for NDI on its own.",
-			"HDMI through the decoder renders green on this firmware and is not recommended. It points the PLAY's own decoder at the NDI stream, which would keep the OSD and web UI alive, but PPApp does not display our full-bandwidth stream correctly.",
+			"NDI|HX sends the hardware encoder's H.264 instead of compressing on the CPU: 30 fps against 18, and about 2 Mbps against roughly 100. It needs a receiver that can decode H.264, which most NDI software can.",
+			"HDMI through the decoder points the PLAY's own decoder at our NDI stream, so nothing is taken from it and the OSD, web UI and tally keep working. It requires NDI set to HX — the decoder renders full-bandwidth NDI green on this firmware.",
+			"Direct HDMI drives the display itself and works with any NDI format, but lowers the frame rate of every output to about 11 fps at 1080p.",
+			"At heights that are not a multiple of 16, such as 1080, the bottom 8 rows are cropped. H.264 pads to a macroblock boundary and this decoder ignores the crop the standard puts in the stream, showing the padding as a green band.",
 		},
 	})
 }

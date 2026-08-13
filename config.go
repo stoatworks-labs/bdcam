@@ -122,8 +122,15 @@ func (c Config) Validate() error {
 		return fmt.Errorf("hdmi_mode must be decoder or direct, got %q", c.HDMIMode)
 	}
 	// The decoder can only show what it can receive, and that is our NDI feed.
-	if outs.HDMI && c.HDMIMode == "decoder" && !outs.NDI {
-		return fmt.Errorf("HDMI through the decoder needs NDI switched on too — that is what the decoder displays")
+	if outs.HDMI && c.HDMIMode == "decoder" {
+		if !outs.NDI {
+			return fmt.Errorf("HDMI through the decoder needs NDI switched on too — that is what the decoder displays")
+		}
+		// PPApp renders our full-bandwidth stream green; it displays HX
+		// correctly, through the hardware decoder that route exists for.
+		if c.NDIFormat != "h264" {
+			return fmt.Errorf("HDMI through the decoder needs NDI set to HX (h264): the decoder renders full-bandwidth NDI green on this firmware")
+		}
 	}
 	return nil
 }
