@@ -197,7 +197,8 @@ func (a *APIServer) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"outputs":            []string{"ndi", "srt", "hdmi"},
 		"outputs_combinable": true,
-		"hdmi_modes":         []string{"decoder", "direct"},
+		"hdmi_modes":         []string{"direct", "decoder"},
+		"hdmi_reduces_rate":  true,
 		"formats":            []string{"auto", "nv12", "mjpeg", "yuyv", "uyvy"},
 		"max_width":          1920,
 		"max_height":         1088,
@@ -206,8 +207,9 @@ func (a *APIServer) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		"notes": []string{
 			"SRT and HDMI encode on the VEPU via mpph264enc, which exposes no bitrate, GOP or rate-control setting in this firmware — it derives a bitrate from the resolution and frame rate.",
 			"All outputs share one capture, so any combination can run at once.",
-			"HDMI through the decoder points the PLAY's own decoder at the NDI stream, so nothing is taken from it — the OSD, web UI and tally keep working. It costs an encode and a decode of latency, and needs NDI switched on.",
-			"Direct HDMI uses kmssink, which needs DRM master and therefore stops the decoder for as long as the converter runs.",
+			"Direct HDMI uses kmssink, which needs DRM master, so the decoder is stopped for as long as the converter runs — no OSD, no web UI video, no tally until it is switched off.",
+			"Switching HDMI on lowers the frame rate of every output. The display needs a second colour conversion per frame on the CPU, and with a 4:2:2 MJPEG camera the hardware JPEG decoder cannot help either. Measured at about 11 fps at 1080p with NDI running alongside, against about 18 fps for NDI on its own.",
+			"HDMI through the decoder renders green on this firmware and is not recommended. It points the PLAY's own decoder at the NDI stream, which would keep the OSD and web UI alive, but PPApp does not display our full-bandwidth stream correctly.",
 		},
 	})
 }

@@ -56,7 +56,7 @@ func main() {
 		srtURL    = flag.String("srt-url", "", "srt://host:port[?streamid=..&passphrase=..&latency=ms]")
 		connector = flag.Int("connector", 0, "DRM connector id for hdmi output (0 = let kmssink choose)")
 		ndiFormat = flag.String("ndi-format", "uyvy", "pixel format handed to libndi: uyvy or nv12 (nv12 is what the PLAY's own decoder renders natively)")
-		hdmiMode  = flag.String("hdmi-mode", "decoder", "how to reach HDMI: decoder (point the PLAY's own decoder at our NDI) or direct (kmssink, takes the display)")
+		hdmiMode  = flag.String("hdmi-mode", "direct", "how to reach HDMI: decoder (point the PLAY's own decoder at our NDI) or direct (kmssink, takes the display)")
 		serve     = flag.String("serve", "", "run the configuration API on this address (e.g. :8090) instead of streaming")
 		confPath  = flag.String("config", "", "read settings from this JSON file; explicit flags still win")
 		unit      = flag.String("unit", "bd-cam", "systemd unit the API restarts to apply settings")

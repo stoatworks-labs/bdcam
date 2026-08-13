@@ -72,16 +72,16 @@ func runPipeline(cfg runConfig) error {
 		logf("source: %s %dx%d@%d %s -> %s", dev, cfg.width, cfg.height, cfg.fps, fourCCName(pixfmt), cfg.out)
 	}
 
+	directHDMI := cfg.out.HDMI && cfg.hdmiMode != "decoder"
+	wantRaw := cfg.out.NDI || directHDMI
+
 	// kmssink cannot set a mode while PPApp is DRM master, so taking the
 	// display means stopping it. Warning about it is no use from a web page,
 	// where there is no shell to run systemctl in.
-	if cfg.out.HDMI && cfg.hdmiMode == "direct" {
+	if directHDMI {
 		restore := takeDisplay()
 		defer restore()
 	}
-
-	directHDMI := cfg.out.HDMI && cfg.hdmiMode == "direct"
-	wantRaw := cfg.out.NDI || directHDMI
 
 	args, err := gstArgs(PipelineConfig{
 		Raw:          wantRaw,
@@ -225,9 +225,7 @@ func runPipeline(cfg runConfig) error {
 // decoder receives.
 func pipelineOutputs(cfg runConfig) Outputs {
 	o := cfg.out
-	if o.HDMI && cfg.hdmiMode != "direct" {
-		o.HDMI = false
-	}
+	o.HDMI = false // the display is fed from our side, never by the capture pipeline
 	return o
 }
 
@@ -294,7 +292,7 @@ func pumpRaw(cfg runConfig, r io.Reader, display *DisplaySink) error {
 		logf("sending as %q (from the shared capture, %d/1 fps declared, %s)",
 			send.SourceName(), cfg.fps, fourCCName(f.FourCC))
 
-		if cfg.out.HDMI && cfg.hdmiMode != "direct" {
+		if cfg.out.HDMI && cfg.hdmiMode == "decoder" {
 			restore := pointDecoderAt(send.SourceName(), send.SourceURL())
 			defer restore()
 		}

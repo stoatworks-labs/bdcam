@@ -62,8 +62,8 @@
               box('bdc_out_hdmi', 'hdmi', 'HDMI', '— straight to the panel') +
               '<div id="bdc_out_hint" style="font-size:11px;opacity:.7;margin-top:3px;"></div>') +
           row('HDMI via', '<select id="bdc_hdmimode">' +
-              '<option value="decoder"' + (current.hdmi_mode !== 'direct' ? ' selected' : '') + '>The decoder — keeps the OSD and web UI</option>' +
-              '<option value="direct"' + (current.hdmi_mode === 'direct' ? ' selected' : '') + '>Direct — takes the display from the decoder</option>' +
+              '<option value="direct"' + (current.hdmi_mode !== 'decoder' ? ' selected' : '') + '>Direct — takes the display from the decoder</option>' +
+              '<option value="decoder"' + (current.hdmi_mode === 'decoder' ? ' selected' : '') + '>Via the decoder — not working on this firmware</option>' +
               '</select>', 'bdc_row_hdmimode') +
           row('Camera',
               '<div style="display:flex;gap:6px;align-items:center;">' +
@@ -151,12 +151,14 @@
     var warn = '';
     var mode = (document.getElementById('bdc_hdmimode') || {}).value;
     if (v.indexOf('hdmi') !== -1) {
-      if (mode === 'direct') {
-        warn = 'Direct HDMI takes the display from the decoder: the OSD, the web UI video and tally stop while the converter runs, and come back when it is switched off.';
-      } else if (v.indexOf('ndi') === -1) {
-        warn = 'HDMI through the decoder shows the NDI stream, so switch NDI on as well.';
+      if (mode === 'decoder') {
+        warn = 'The decoder route renders green on this firmware — PPApp does not display our stream correctly. Use Direct.';
       } else {
-        warn = 'HDMI through the decoder leaves the whole BirdDog stack running; it costs an encode and a decode of latency.';
+        // Both costs are real and measured; people should know before they
+        // turn it on and wonder why everything slowed down.
+        warn = 'Switching HDMI on lowers the frame rate of every output — the display needs another conversion per frame on the CPU. ' +
+               'Measured at about 11 fps at 1080p with NDI alongside, against about 18 fps for NDI on its own. ' +
+               'Direct HDMI also takes the display from the decoder: the OSD, web UI video and tally stop until the converter is switched off.';
       }
     }
     if (caps && !caps.bitrate_adjustable && v.indexOf('srt') !== -1) {
