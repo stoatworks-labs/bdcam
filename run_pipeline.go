@@ -73,7 +73,11 @@ func runPipeline(cfg runConfig) error {
 	}
 
 	directHDMI := cfg.out.HDMI && cfg.hdmiMode != "decoder"
-	wantRaw := cfg.out.NDI || directHDMI
+	// NDI|HX takes its frames from the encoder branch, the same one SRT uses,
+	// so the VEPU compresses once and both consumers share the result.
+	hx := cfg.out.NDI && cfg.ndiFormat == "h264"
+	wantRaw := (cfg.out.NDI && !hx) || directHDMI
+	wantEncode := cfg.out.SRT || hx
 
 	// kmssink cannot set a mode while PPApp is DRM master, so taking the
 	// display means stopping it. Warning about it is no use from a web page,
@@ -83,12 +87,31 @@ func runPipeline(cfg runConfig) error {
 		defer restore()
 	}
 
+	// H.264 codes in 16-row macroblocks. At 1080 the decoder pads to 1088 and
+	// the eight extra rows arrive uninitialised — a green band along the bottom
+	// on any receiver that does not honour the SPS crop, which the PLAY's own
+	// decoder does not. Trim to a whole number of macroblocks instead.
+	cropBottom := 0
+	if wantEncode {
+		if rem := cfg.height % 16; rem != 0 {
+			cropBottom = rem
+			logf("cropping %d rows: %d is not a multiple of 16, and the padding shows as a green band on decoders that ignore the SPS crop — encoding %dx%d",
+				rem, cfg.height, cfg.width, cfg.height-rem)
+		}
+	}
+	// The camera is still asked for its own geometry; only what comes out of
+	// the decoder is trimmed. Asking v4l2src for a size it does not offer fails
+	// negotiation outright.
+	sourceHeight := cfg.height
+
 	args, err := gstArgs(PipelineConfig{
+		CropBottom:   cropBottom,
+		Encode:       wantEncode,
 		Raw:          wantRaw,
 		Synthetic:    cfg.synthetic,
 		Device:       dev,
 		Width:        cfg.width,
-		Height:       cfg.height,
+		Height:       sourceHeight,
 		FPS:          cfg.fps,
 		Pixfmt:       pixfmt,
 		Out:          pipelineOutputs(cfg),
@@ -98,6 +121,10 @@ func runPipeline(cfg runConfig) error {
 	if err != nil {
 		return err
 	}
+
+	// Everything downstream — NDI frame geometry, the display sink — works in
+	// the cropped height.
+	cfg.height -= cropBottom
 
 	pl, err := StartPipeline(args)
 	if err != nil {
@@ -113,9 +140,8 @@ func runPipeline(cfg runConfig) error {
 		_ = pl.Close()
 	}()
 
-	// HDMI alone means nothing comes back to us — GStreamer is doing all of the
-	// work and we are only supervising it.
-	if !cfg.out.SRT && !cfg.out.NDI {
+	// Nothing to read back at all: GStreamer is doing all the work.
+	if !wantEncode && !wantRaw {
 		logf("hdmi output running; nothing to read back")
 		if cfg.duration > 0 {
 			go func() {
@@ -146,7 +172,7 @@ func runPipeline(cfg runConfig) error {
 				logf("raw output stopped: %v", err)
 			}
 		}()
-		if !cfg.out.SRT {
+		if !wantEncode {
 			// Nothing to read on stdout; wait for the pump or the pipeline.
 			if cfg.duration > 0 {
 				go func() {
@@ -160,13 +186,38 @@ func runPipeline(cfg runConfig) error {
 		}
 	}
 
-	sender, err := DialSRT(cfg.srtURL)
-	if err != nil {
-		return err
+	var sender *SRTSender
+	var mux *TSMuxer
+	if cfg.out.SRT {
+		sender, err = DialSRT(cfg.srtURL)
+		if err != nil {
+			return err
+		}
+		defer sender.Close()
+		mux = NewTSMuxer(sender)
 	}
-	defer sender.Close()
 
-	mux := NewTSMuxer(sender)
+	// NDI|HX shares these access units with SRT rather than encoding twice.
+	var hxSend *Sender
+	var hxBuf []byte
+	if hx {
+		ndi, err := LoadNDI(cfg.ndiLib)
+		if err != nil {
+			return err
+		}
+		defer ndi.Close()
+		hxSend, err = ndi.NewSender(cfg.name, cfg.clock)
+		if err != nil {
+			return err
+		}
+		defer hxSend.Close()
+		hxBuf = make([]byte, CompressedHeaderSize()+maxAUBytes)
+		logf("sending as %q (NDI|HX, H.264 from the VEPU, %d/1 fps declared)", hxSend.SourceName(), cfg.fps)
+		if cfg.out.HDMI && cfg.hdmiMode == "decoder" {
+			restore := pointDecoderAt(hxSend.SourceName(), hxSend.SourceURL())
+			defer restore()
+		}
+	}
 	var (
 		frames   int
 		bytesOut int64
@@ -188,8 +239,13 @@ func runPipeline(cfg runConfig) error {
 		// against the declared rate is the clock. That is exact for a camera
 		// running at its nominal rate, which is the case we build for.
 		pts := int64(frames) * 90000 / int64(cfg.fps)
-		if err := mux.WriteAccessUnit(au, pts, key); err != nil {
-			return err
+		if mux != nil {
+			if err := mux.WriteAccessUnit(au, pts, key); err != nil {
+				return err
+			}
+		}
+		if hxSend != nil {
+			hxSend.SendCompressed(hxBuf, au, pts, key, cfg.fps, 1, cfg.width, cfg.height)
 		}
 		frames++
 		bytesOut += int64(len(au))
@@ -202,7 +258,11 @@ func runPipeline(cfg runConfig) error {
 			w := now.Sub(last).Seconds()
 			fps := float64(frames-atLast) / w
 			mbps := float64(bytesOut-byteLast) * 8 / w / 1e6
-			logf("frames=%d fps=%.2f bitrate=%.2f Mbps keyframes=%d", frames, fps, mbps, keyfr)
+			conns := 0
+			if hxSend != nil {
+				conns = hxSend.Connections()
+			}
+			logf("h264: frames=%d fps=%.2f bitrate=%.2f Mbps keyframes=%d conns=%d", frames, fps, mbps, keyfr, conns)
 			last, atLast, byteLast = now, frames, bytesOut
 		}
 		if !deadline.IsZero() && now.After(deadline) {

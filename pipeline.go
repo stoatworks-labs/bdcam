@@ -87,6 +87,15 @@ type PipelineConfig struct {
 	Synthetic   bool
 	// Raw emits I420 frames on ndiPipeFD, for NDI, the display sink, or both.
 	Raw bool
+	// Encode emits H.264 access units on stdout, for SRT, NDI|HX, or both.
+	Encode bool
+	// CropBottom trims rows after decoding, before anything else sees the
+	// frames. H.264 codes in 16-row macroblocks, so a height that is not a
+	// multiple of 16 is padded — 1080 becomes 1088 — and the padding rows are
+	// uninitialised. The standard says to crop them and the SPS carries the
+	// offsets, but a decoder that ignores that shows them as a green band along
+	// the bottom. Trimming to a whole number of macroblocks avoids the argument.
+	CropBottom int
 	// SoftwareJPEG forces the CPU JPEG decoder. The VPU's decoder aborts the
 	// process on anything that is not 4:2:0, so this is not optional for a
 	// 4:2:2 camera — see jpegprobe.go.
@@ -96,7 +105,7 @@ type PipelineConfig struct {
 // gstArgs builds the gst-launch-1.0 argument list. Kept as a pure function so
 // the shape of the pipeline is testable without a camera or a device.
 func gstArgs(c PipelineConfig) ([]string, error) {
-	if !c.Out.SRT && !c.Raw {
+	if !c.Encode && !c.Raw {
 		return nil, fmt.Errorf("pipeline needs at least one branch")
 	}
 	if c.Width > 1920 || c.Height > 1088 {
@@ -110,6 +119,10 @@ func gstArgs(c PipelineConfig) ([]string, error) {
 		// bitrate figures mean something.
 		p = append(p, "videotestsrc", "is-live=true", "pattern=smpte")
 		p = append(p, "!", fmt.Sprintf("video/x-raw,format=NV12,width=%d,height=%d,framerate=%d/1", c.Width, c.Height, c.FPS))
+		p = append(p, "!", "videoconvert", "!", "video/x-raw,format=I420")
+		if c.CropBottom > 0 {
+			p = append(p, "!", "videocrop", fmt.Sprintf("bottom=%d", c.CropBottom))
+		}
 		return append(p, encodeAndDisplay(c)...), nil
 	}
 	p = append(p, "v4l2src", fmt.Sprintf("device=%s", c.Device))
@@ -133,14 +146,17 @@ func gstArgs(c PipelineConfig) ([]string, error) {
 			name = "UYVY"
 		}
 		p = append(p, "!", fmt.Sprintf("video/x-raw,format=%s,width=%d,height=%d,framerate=%d/1", name, c.Width, c.Height, c.FPS))
-		// The encoder wants NV12 or I420; this conversion is on the CPU and is
-		// the expensive step in the whole pipeline. Prefer a camera that can
-		// give NV12 or MJPEG directly.
-		p = append(p, "!", "videoconvert", "!", "video/x-raw,format=NV12")
 	default:
 		return nil, fmt.Errorf("no pipeline for capture format %s", fourCCName(c.Pixfmt))
 	}
 
+	// Normalise to I420 once, here, rather than per branch. The encoder takes
+	// it, the raw branch wants it, and videocrop cannot handle jpegdec's planar
+	// 4:2:2 at all — a crop straight after the decoder fails to negotiate.
+	p = append(p, "!", "videoconvert", "!", "video/x-raw,format=I420")
+	if c.CropBottom > 0 {
+		p = append(p, "!", "videocrop", fmt.Sprintf("bottom=%d", c.CropBottom))
+	}
 	return append(p, encodeAndDisplay(c)...), nil
 }
 
@@ -168,17 +184,14 @@ func encodeAndDisplay(c PipelineConfig) []string {
 		"!", "video/x-h264,stream-format=byte-stream,alignment=au",
 		"!", "fdsink", "fd=1", "sync=false",
 	)
-	// I420 because it is the only conversion this GStreamer does quickly, and
-	// both consumers of this branch — NDI and the display sink — can work from
-	// it. fd 3 rather than stdout, so SRT can keep stdout for H.264.
+	// Already I420 by now — the conversion happens once, before the tee.
+	// fd 3 rather than stdout, so SRT can keep stdout for H.264.
 	raw := append(append([]string{}, q...),
-		"!", "videoconvert",
-		"!", "video/x-raw,format=I420",
 		"!", "fdsink", fmt.Sprintf("fd=%d", ndiPipeFD), "sync=false",
 	)
 
 	var branches [][]string
-	if c.Out.SRT {
+	if c.Encode {
 		branches = append(branches, encode)
 	}
 	// One raw branch serves both NDI and the display sink: they want the same

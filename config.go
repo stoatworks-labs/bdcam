@@ -31,7 +31,10 @@ type Config struct {
 	// "direct" drives the display with kmssink, taking it from PPApp; "decoder"
 	// points the PLAY's own decoder at our NDI stream instead. Empty means
 	// direct — the decoder route renders green on this firmware.
-	HDMIMode  string `json:"hdmi_mode"`
+	HDMIMode string `json:"hdmi_mode"`
+	// "h264" sends NDI|HX using the hardware encoder instead of compressing on
+	// the CPU. Empty means uyvy.
+	NDIFormat string `json:"ndi_format"`
 	Synthetic bool   `json:"synthetic"`
 }
 
@@ -108,6 +111,11 @@ func (c Config) Validate() error {
 	if _, err := parseFormat(c.Format); err != nil {
 		return err
 	}
+	switch c.NDIFormat {
+	case "", "uyvy", "nv12", "h264":
+	default:
+		return fmt.Errorf("ndi_format must be uyvy, nv12 or h264, got %q", c.NDIFormat)
+	}
 	switch c.HDMIMode {
 	case "", "decoder", "direct":
 	default:
@@ -149,6 +157,9 @@ func (c Config) ToArgs() []string {
 	}
 	if c.HDMIMode != "" {
 		a = append(a, "--hdmi-mode", c.HDMIMode)
+	}
+	if c.NDIFormat != "" {
+		a = append(a, "--ndi-format", c.NDIFormat)
 	}
 	return a
 }
