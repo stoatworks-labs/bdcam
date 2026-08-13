@@ -126,7 +126,7 @@ func PatchWebUI(dir string) error {
 		return fmt.Errorf("write %s: %w", tpl, err)
 	}
 	logf("patched %s", tpl)
-	logf("restart the web UI for it to take effect: systemctl restart birddog-web-ui")
+	logf("restart the web UI for it to take effect: systemctl restart BirdDogWebUI")
 	return nil
 }
 
@@ -147,7 +147,7 @@ func UnpatchWebUI(dir string) error {
 		logf("%s carries no tab to remove", tpl)
 	}
 	_ = os.Remove(filepath.Join(dir, "static", "uvc-converter.js"))
-	logf("restart the web UI for it to take effect: systemctl restart birddog-web-ui")
+	logf("restart the web UI for it to take effect: systemctl restart BirdDogWebUI")
 	return nil
 }
 
