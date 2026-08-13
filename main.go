@@ -55,6 +55,7 @@ func main() {
 		output    = flag.String("output", "ndi", "outputs: ndi, srt, hdmi (comma separated; srt+hdmi may be combined)")
 		srtURL    = flag.String("srt-url", "", "srt://host:port[?streamid=..&passphrase=..&latency=ms]")
 		connector = flag.Int("connector", 0, "DRM connector id for hdmi output (0 = let kmssink choose)")
+		ndiFormat = flag.String("ndi-format", "uyvy", "pixel format handed to libndi: uyvy or nv12 (nv12 is what the PLAY's own decoder renders natively)")
 		hdmiMode  = flag.String("hdmi-mode", "decoder", "how to reach HDMI: decoder (point the PLAY's own decoder at our NDI) or direct (kmssink, takes the display)")
 		serve     = flag.String("serve", "", "run the configuration API on this address (e.g. :8090) instead of streaming")
 		confPath  = flag.String("config", "", "read settings from this JSON file; explicit flags still win")
@@ -198,6 +199,7 @@ func main() {
 		srtURL:    *srtURL,
 		connector: *connector,
 		hdmiMode:  *hdmiMode,
+		ndiFormat: *ndiFormat,
 	}); err != nil {
 		logf("FATAL: %v", err)
 		// Exit 1 so systemd's Restart=always retries. A missing camera is not
@@ -249,6 +251,7 @@ type runConfig struct {
 	srtURL    string
 	connector int
 	hdmiMode  string
+	ndiFormat string
 }
 
 func run(cfg runConfig) error {

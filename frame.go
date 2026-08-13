@@ -216,3 +216,66 @@ func (s *SyntheticSource) Next() *Frame {
 	s.frame = Frame{Width: s.w, Height: s.h, FourCC: fourCCUYVY, Stride: s.w * 2, Data: s.buf}
 	return &s.frame
 }
+
+// i420ToUYVY packs planar 4:2:0 into the packed 4:2:2 layout libndi is happiest
+// with.
+//
+// This exists because of a measurement, not a preference. GStreamer's
+// videoconvert on this device takes about 950 ms per 1080p frame converting
+// jpegdec's planar 4:2:2 to UYVY, and 500 ms to NV12, but only ~40 ms to I420 —
+// a fast path against a generic one. So the pipeline asks for I420, which is
+// cheap, and the packing is finished here, which is a straight interleave.
+//
+// Chroma is duplicated vertically: 4:2:0 has one chroma row per two luma rows,
+// and 4:2:2 wants one per row.
+func i420ToUYVY(src, dst []byte, w, h int) error {
+	ySize := w * h
+	cSize := (w / 2) * (h / 2)
+	if len(src) < ySize+2*cSize {
+		return fmt.Errorf("I420 frame is %d bytes, need %d for %dx%d", len(src), ySize+2*cSize, w, h)
+	}
+	if len(dst) < w*h*2 {
+		return fmt.Errorf("UYVY destination is %d bytes, need %d", len(dst), w*h*2)
+	}
+	yp := src[:ySize]
+	up := src[ySize : ySize+cSize]
+	vp := src[ySize+cSize : ySize+2*cSize]
+	cw := w / 2
+
+	for y := 0; y < h; y++ {
+		yrow := yp[y*w:]
+		crow := (y / 2) * cw
+		drow := dst[y*w*2:]
+		for x := 0; x < w; x += 2 {
+			c := crow + x/2
+			drow[x*2+0] = up[c]
+			drow[x*2+1] = yrow[x]
+			drow[x*2+2] = vp[c]
+			drow[x*2+3] = yrow[x+1]
+		}
+	}
+	return nil
+}
+
+// i420ToNV12 keeps the luma plane as it is and interleaves the two chroma
+// planes, which is all NV12 is. Cheaper than packing to UYVY — the luma is a
+// straight copy and only a quarter of the frame is touched twice.
+func i420ToNV12(src, dst []byte, w, h int) error {
+	ySize := w * h
+	cSize := (w / 2) * (h / 2)
+	if len(src) < ySize+2*cSize {
+		return fmt.Errorf("I420 frame is %d bytes, need %d for %dx%d", len(src), ySize+2*cSize, w, h)
+	}
+	if len(dst) < ySize+2*cSize {
+		return fmt.Errorf("NV12 destination is %d bytes, need %d", len(dst), ySize+2*cSize)
+	}
+	copy(dst[:ySize], src[:ySize])
+	up := src[ySize : ySize+cSize]
+	vp := src[ySize+cSize : ySize+2*cSize]
+	out := dst[ySize:]
+	for i := 0; i < cSize; i++ {
+		out[i*2] = up[i]
+		out[i*2+1] = vp[i]
+	}
+	return nil
+}

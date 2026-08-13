@@ -202,3 +202,73 @@ func TestParseSize(t *testing.T) {
 		t.Error("expected an error for a zero dimension")
 	}
 }
+
+func TestI420ToUYVY(t *testing.T) {
+	const w, h = 4, 4
+	src := make([]byte, w*h*3/2)
+	for i := 0; i < w*h; i++ {
+		src[i] = byte(i) // luma 0..15
+	}
+	u := src[w*h:]
+	v := src[w*h+(w/2)*(h/2):]
+	for i := 0; i < (w/2)*(h/2); i++ {
+		u[i] = byte(100 + i)
+		v[i] = byte(200 + i)
+	}
+	dst := make([]byte, w*h*2)
+	if err := i420ToUYVY(src, dst, w, h); err != nil {
+		t.Fatal(err)
+	}
+	// Row 0, first pair: U, Y0, V, Y1
+	if dst[0] != 100 || dst[1] != 0 || dst[2] != 200 || dst[3] != 1 {
+		t.Errorf("row 0 pair 0 = %v, want [100 0 200 1]", dst[0:4])
+	}
+	// 4:2:0 -> 4:2:2 duplicates chroma down: row 1 shares row 0's chroma but
+	// has its own luma.
+	r1 := w * 2
+	if dst[r1+0] != 100 || dst[r1+1] != byte(w) {
+		t.Errorf("row 1 pair 0 = %v, want chroma 100 and luma %d", dst[r1:r1+4], w)
+	}
+	// Row 2 moves to the next chroma row.
+	r2 := 2 * w * 2
+	if dst[r2+0] != byte(100+w/2) {
+		t.Errorf("row 2 chroma = %d, want %d", dst[r2+0], 100+w/2)
+	}
+}
+
+func TestI420ToUYVYRejectsShortBuffers(t *testing.T) {
+	if err := i420ToUYVY(make([]byte, 10), make([]byte, 4*4*2), 4, 4); err == nil {
+		t.Error("a short source should be refused, not read past the end")
+	}
+	if err := i420ToUYVY(make([]byte, 4*4*3/2), make([]byte, 10), 4, 4); err == nil {
+		t.Error("a short destination should be refused")
+	}
+}
+
+func TestI420ToNV12(t *testing.T) {
+	const w, h = 4, 4
+	src := make([]byte, w*h*3/2)
+	for i := 0; i < w*h; i++ {
+		src[i] = byte(i)
+	}
+	cs := (w / 2) * (h / 2)
+	for i := 0; i < cs; i++ {
+		src[w*h+i] = byte(100 + i)
+		src[w*h+cs+i] = byte(200 + i)
+	}
+	dst := make([]byte, w*h*3/2)
+	if err := i420ToNV12(src, dst, w, h); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < w*h; i++ {
+		if dst[i] != byte(i) {
+			t.Fatalf("luma changed at %d: %d", i, dst[i])
+		}
+	}
+	// Chroma interleaved as Cb, Cr pairs.
+	for i := 0; i < cs; i++ {
+		if dst[w*h+i*2] != byte(100+i) || dst[w*h+i*2+1] != byte(200+i) {
+			t.Fatalf("chroma pair %d = %d,%d", i, dst[w*h+i*2], dst[w*h+i*2+1])
+		}
+	}
+}

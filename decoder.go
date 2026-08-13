@@ -53,7 +53,14 @@ func pointDecoderAt(name, url string) func() {
 		logf("WARNING: could not point the decoder at %q (%v) — HDMI will keep showing whatever it had", name, err)
 		return func() {}
 	}
-	logf("decoder pointed at %q (%s:%s); HDMI is being driven by PPApp, not by us", name, host, port)
+	// Writing the source file is not enough: PPApp reads it when it starts and
+	// otherwise carries on with whatever it already had. Without this the
+	// decoder sits there with the right address and never connects — the
+	// symptom is a black picture and a sender that reports no receivers.
+	if err := restartDecoder(); err != nil {
+		logf("WARNING: could not restart the decoder (%v) — it may not pick up the new source", err)
+	}
+	logf("decoder pointed at %q (%s:%s) and restarted; HDMI is being driven by PPApp, not by us", name, host, port)
 	if previous != "" && previous != name {
 		logf("previous source was %q and will be restored on exit", previous)
 	}
@@ -65,8 +72,36 @@ func pointDecoderAt(name, url string) func() {
 		logf("restoring the decoder source to %q", previous)
 		if err := setDecoderSource(previous, "", ""); err != nil {
 			logf("WARNING: could not restore the decoder source (%v)", err)
+			return
+		}
+		// Same again: the decoder needs restarting to act on the change, or it
+		// keeps trying to receive a sender that has just gone away.
+		if err := restartDecoder(); err != nil {
+			logf("WARNING: could not restart the decoder (%v)", err)
 		}
 	}
+}
+
+// restartDecoder asks PPApp to reload. It is the documented way to make the
+// device act on a source change, and the SRT listener behaves the same way.
+func restartDecoder() error {
+	client := &http.Client{Timeout: 15 * time.Second}
+	req, err := http.NewRequest(http.MethodPost, birddogAPI+"/restart", bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("/restart returned %s", resp.Status)
+	}
+	// It takes a moment to come back and reconnect.
+	time.Sleep(3 * time.Second)
+	return nil
 }
 
 func setDecoderSource(name, ip, port string) error {

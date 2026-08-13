@@ -243,12 +243,31 @@ func pumpNDI(cfg runConfig, r io.Reader) error {
 		defer restore()
 	}
 
-	// I420: a full-size luma plane followed by two half-size chroma planes,
-	// contiguous, which is exactly how libndi wants it. Stride is the luma
-	// stride; NDI derives the chroma strides from it.
+	// The pipeline hands over I420 because that is the only conversion this
+	// GStreamer does quickly, and the packing to UYVY is finished here — see
+	// i420ToUYVY. UYVY is also the format this device is known to send
+	// correctly; I420 straight to libndi produced a green picture.
 	frameSize := cfg.width * cfg.height * 3 / 2
 	buf := make([]byte, frameSize)
-	f := Frame{Width: cfg.width, Height: cfg.height, FourCC: fourCCI420, Stride: cfg.width, Data: buf}
+
+	// Which layout to hand libndi. UYVY is the safe default, but the PLAY's own
+	// decoder renders NV12 natively — its display path was built around the
+	// hardware decoder's output — so nv12 is what makes the loopback HDMI route
+	// look right.
+	var packed []byte
+	var pack func() error
+	f := Frame{Width: cfg.width, Height: cfg.height}
+	switch cfg.ndiFormat {
+	case "nv12":
+		packed = make([]byte, frameSize)
+		f.FourCC, f.Stride, f.Data = fourCCNV12, cfg.width, packed
+		pack = func() error { return i420ToNV12(buf, packed, cfg.width, cfg.height) }
+	default:
+		packed = make([]byte, cfg.width*cfg.height*2)
+		f.FourCC, f.Stride, f.Data = fourCCUYVY, cfg.width*2, packed
+		pack = func() error { return i420ToUYVY(buf, packed, cfg.width, cfg.height) }
+	}
+	logf("ndi pixel format: %s", fourCCName(f.FourCC))
 
 	var frames int
 	start := time.Now()
@@ -260,6 +279,9 @@ func pumpNDI(cfg runConfig, r io.Reader) error {
 				logf("raw frame pipe closed after %d frames", frames)
 				return nil
 			}
+			return err
+		}
+		if err := pack(); err != nil {
 			return err
 		}
 		send.SendVideo(&f, cfg.fps, 1)
