@@ -26,6 +26,7 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"sync"
 )
 
 type Outputs struct {
@@ -157,7 +158,15 @@ func encodeAndDisplay(c PipelineConfig) []string {
 		"!", "video/x-h264,stream-format=byte-stream,alignment=au",
 		"!", "fdsink", "fd=1", "sync=false",
 	}
-	display := []string{"!", "queue", "max-size-buffers=3", "leaky=downstream", "!", "kmssink", "force-modesetting=true"}
+	// The VOP scans out NV12; jpegdec hands back I420 or, from a 4:2:2 source,
+	// Y42B, and kmssink takes neither. Without this the whole pipeline fails
+	// negotiation right back at the source with a bare "not-negotiated".
+	display := []string{
+		"!", "queue", "max-size-buffers=3", "leaky=downstream",
+		"!", "videoconvert",
+		"!", "video/x-raw,format=NV12",
+		"!", "kmssink", "force-modesetting=true",
+	}
 	if c.ConnectorID > 0 {
 		display = append(display, fmt.Sprintf("connector-id=%d", c.ConnectorID))
 	}
@@ -180,6 +189,13 @@ func encodeAndDisplay(c PipelineConfig) []string {
 type Pipeline struct {
 	cmd    *exec.Cmd
 	Stdout io.ReadCloser
+
+	// A duration timer, a signal and the main path can all end up here at
+	// once. Waiting twice on the same child returns "waitid: no child
+	// processes", which then reads as a crash on a perfectly clean stop.
+	waitOnce sync.Once
+	waitErr  error
+	killed   bool
 }
 
 // StartPipeline launches gst-launch-1.0. Its stderr is relayed into our log
@@ -212,8 +228,20 @@ func (p *Pipeline) Close() error {
 	if p == nil || p.cmd == nil || p.cmd.Process == nil {
 		return nil
 	}
+	p.killed = true
 	_ = p.cmd.Process.Kill()
-	return p.cmd.Wait()
+	return p.Wait()
 }
 
-func (p *Pipeline) Wait() error { return p.cmd.Wait() }
+// Wait is safe to call from several places and reports a deliberate kill as a
+// clean stop rather than an error.
+func (p *Pipeline) Wait() error {
+	if p == nil || p.cmd == nil {
+		return nil
+	}
+	p.waitOnce.Do(func() { p.waitErr = p.cmd.Wait() })
+	if p.killed {
+		return nil
+	}
+	return p.waitErr
+}

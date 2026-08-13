@@ -114,6 +114,20 @@ func TestCombinedOutputsTee(t *testing.T) {
 	}
 }
 
+// Without a conversion to NV12 the VOP cannot scan out what jpegdec produces,
+// and the whole pipeline fails negotiation at the source.
+func TestHDMIBranchConvertsToNV12(t *testing.T) {
+	c := base()
+	c.Out = Outputs{HDMI: true}
+	got := args(t, c)
+	if !strings.Contains(got, "videoconvert") || !strings.Contains(got, "format=NV12") {
+		t.Errorf("HDMI branch must convert to NV12 for the VOP: %s", got)
+	}
+	if strings.Index(got, "videoconvert") > strings.Index(got, "kmssink") {
+		t.Errorf("the conversion must come before kmssink: %s", got)
+	}
+}
+
 func TestHDMIOnlyHasNoEncoder(t *testing.T) {
 	c := base()
 	c.Out = Outputs{HDMI: true}

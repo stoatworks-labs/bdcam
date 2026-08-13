@@ -71,8 +71,12 @@ func runPipeline(cfg runConfig) error {
 		logf("source: %s %dx%d@%d %s -> %s", dev, cfg.width, cfg.height, cfg.fps, fourCCName(pixfmt), cfg.out)
 	}
 
+	// kmssink cannot set a mode while PPApp is DRM master, so taking the
+	// display means stopping it. Warning about it is no use from a web page,
+	// where there is no shell to run systemctl in.
 	if cfg.out.HDMI {
-		warnIfDRMBusy()
+		restore := takeDisplay()
+		defer restore()
 	}
 
 	args, err := gstArgs(PipelineConfig{
@@ -115,11 +119,7 @@ func runPipeline(cfg runConfig) error {
 				_ = pl.Close()
 			}()
 		}
-		err := pl.Wait()
-		if err != nil && strings.Contains(err.Error(), "signal") {
-			return nil
-		}
-		return err
+		return pl.Wait()
 	}
 
 	sender, err := DialSRT(cfg.srtURL)
@@ -228,16 +228,32 @@ func pickPipelineFormat(dev string) (uint32, error) {
 	return 0, fmt.Errorf("camera offers no usable format for the pipeline: %v", names)
 }
 
-// warnIfDRMBusy explains the most likely HDMI failure before GStreamer hits it.
-// PPApp is DRM master on card0 and will not share, so kmssink cannot set a mode
-// while it runs.
-func warnIfDRMBusy() {
+// takeDisplay stops BirdDogRunner so kmssink can become DRM master on card0,
+// and returns a function that puts it back. PPApp does not share the display,
+// so this is the price of HDMI output — the normal decoder output stops for as
+// long as the converter is running.
+//
+// The restore runs on every ordinary exit including SIGTERM, so switching the
+// converter off through the web UI hands the display back. It cannot run if the
+// process is killed outright, so the unit also restarts BirdDogRunner in
+// ExecStopPost.
+func takeDisplay() func() {
 	out, _ := exec.Command("systemctl", "is-active", "BirdDogRunner").Output()
-	if strings.TrimSpace(string(out)) == "active" {
-		logf("WARNING: BirdDogRunner (PPApp) is running and holds DRM master on card0.")
-		logf("         kmssink cannot set a mode while it does. Stop it first:")
-		logf("           systemctl stop BirdDogRunner")
-		logf("         and remember to start it again afterwards — the HDMI output")
-		logf("         is dark until you do, which looks like a brick and is not.")
+	if strings.TrimSpace(string(out)) != "active" {
+		logf("BirdDogRunner is not running; taking the display without stopping anything")
+		return func() {}
+	}
+	logf("stopping BirdDogRunner to take DRM master — the normal PLAY output stops until the converter is switched off")
+	if err := exec.Command("systemctl", "stop", "BirdDogRunner").Run(); err != nil {
+		logf("WARNING: could not stop BirdDogRunner (%v); kmssink will not get the display", err)
+		return func() {}
+	}
+	// Give PPApp a moment to release card0 before kmssink asks for it.
+	time.Sleep(1500 * time.Millisecond)
+	return func() {
+		logf("restoring BirdDogRunner")
+		if err := exec.Command("systemctl", "start", "BirdDogRunner").Run(); err != nil {
+			logf("WARNING: could not restart BirdDogRunner (%v) — HDMI stays dark until it is started", err)
+		}
 	}
 }
