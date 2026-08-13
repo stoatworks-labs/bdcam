@@ -55,6 +55,7 @@ func main() {
 		output    = flag.String("output", "ndi", "outputs: ndi, srt, hdmi (comma separated; srt+hdmi may be combined)")
 		srtURL    = flag.String("srt-url", "", "srt://host:port[?streamid=..&passphrase=..&latency=ms]")
 		connector = flag.Int("connector", 0, "DRM connector id for hdmi output (0 = let kmssink choose)")
+		hdmiMode  = flag.String("hdmi-mode", "decoder", "how to reach HDMI: decoder (point the PLAY's own decoder at our NDI) or direct (kmssink, takes the display)")
 		serve     = flag.String("serve", "", "run the configuration API on this address (e.g. :8090) instead of streaming")
 		confPath  = flag.String("config", "", "read settings from this JSON file; explicit flags still win")
 		unit      = flag.String("unit", "bd-cam", "systemd unit the API restarts to apply settings")
@@ -137,6 +138,9 @@ func main() {
 		if !set["synthetic"] && c.Synthetic {
 			*synthetic = true
 		}
+		if !set["hdmi-mode"] && c.HDMIMode != "" {
+			*hdmiMode = c.HDMIMode
+		}
 		logf("loaded %s", *confPath)
 	}
 
@@ -193,12 +197,39 @@ func main() {
 		out:       outs,
 		srtURL:    *srtURL,
 		connector: *connector,
+		hdmiMode:  *hdmiMode,
 	}); err != nil {
 		logf("FATAL: %v", err)
 		// Exit 1 so systemd's Restart=always retries. A missing camera is not
 		// fatal in the same sense — see the exit 0 path in run().
 		os.Exit(1)
 	}
+}
+
+// sourceIsMJPEG reports whether the camera we would open only offers MJPEG.
+func sourceIsMJPEG(cfg runConfig) bool {
+	if want, err := parseFormat(cfg.format); err == nil && want != 0 {
+		return want == pixMJPG
+	}
+	dev := cfg.device
+	if dev == "" || !IsCaptureDevice(dev) {
+		EnsureUVCBound()
+		devs := findVideoDevices()
+		if len(devs) == 0 {
+			return false
+		}
+		dev = devs[0]
+	}
+	fs, err := EnumFormats(dev)
+	if err != nil {
+		return false
+	}
+	for _, f := range fs {
+		if f == pixUYVY || f == pixYUYV || f == pixNV12 {
+			return false // something cheaper is on offer
+		}
+	}
+	return true
 }
 
 type runConfig struct {
@@ -217,10 +248,19 @@ type runConfig struct {
 	out       Outputs
 	srtURL    string
 	connector int
+	hdmiMode  string
 }
 
 func run(cfg runConfig) error {
+	// The pipeline owns the camera whenever more than NDI is involved. NDI on
+	// its own still uses the direct V4L2 path, which is zero-copy for an
+	// uncompressed camera — except for MJPEG, where Go's decoder is about ten
+	// times slower than the one GStreamer links.
 	if cfg.out.SRT || cfg.out.HDMI {
+		return runPipeline(cfg)
+	}
+	if cfg.out.NDI && !cfg.synthetic && sourceIsMJPEG(cfg) {
+		logf("camera is MJPEG — capturing through GStreamer, whose JPEG decoder is far faster than ours")
 		return runPipeline(cfg)
 	}
 	ndi, err := LoadNDI(cfg.ndiLib)

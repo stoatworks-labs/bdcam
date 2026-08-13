@@ -28,7 +28,7 @@ func TestConfigValidation(t *testing.T) {
 		{"srt with url", func(c *Config) { c.Outputs = "srt"; c.SRTURL = "srt://host:9000" }, ""},
 		{"srt url needs a port", func(c *Config) { c.Outputs = "srt"; c.SRTURL = "srt://host" }, "explicit port"},
 		{"srt url needs srt scheme", func(c *Config) { c.Outputs = "srt"; c.SRTURL = "udp://host:9000" }, "must start with srt://"},
-		{"ndi cannot pair with hdmi", func(c *Config) { c.Outputs = "ndi,hdmi" }, "cannot be combined"},
+		{"ndi pairs with hdmi", func(c *Config) { c.Outputs = "ndi,hdmi" }, ""},
 		{"unknown output", func(c *Config) { c.Outputs = "rtmp" }, "unknown output"},
 		{"odd size", func(c *Config) { c.Width = 1281 }, "must be even"},
 		{"zero size", func(c *Config) { c.Width = 0 }, "must be positive"},

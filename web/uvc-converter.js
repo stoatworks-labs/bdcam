@@ -38,15 +38,13 @@
   }
 
   function render() {
-    var outputs = [
-      ['ndi', 'NDI (uncompressed)'],
-      ['srt', 'SRT (H.264)'],
-      ['hdmi', 'HDMI out'],
-      ['srt,hdmi', 'SRT + HDMI']
-    ];
-    var outOpts = outputs.map(function (o) {
-      return '<option value="' + o[0] + '"' + (current.outputs === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
-    }).join('');
+    var chosen = String(current.outputs || '').split(',').map(function (s) { return s.trim(); });
+    function box(id, val, label, hint) {
+      return '<label style="display:block;margin:0 0 2px 0;font-weight:normal;">' +
+        '<input type="checkbox" id="' + id + '" value="' + val + '"' +
+        (chosen.indexOf(val) !== -1 ? ' checked' : '') + ' style="width:auto;margin-right:6px;vertical-align:middle;">' +
+        label + ' <span style="opacity:.65;font-size:11px;">' + hint + '</span></label>';
+    }
 
     var formats = (caps && caps.formats) || ['auto'];
     var size = current.width + 'x' + current.height;
@@ -58,7 +56,15 @@
           row('Converter', '<select id="bdc_enabled">' +
               '<option value="0"' + (!current.enabled ? ' selected' : '') + '>Off</option>' +
               '<option value="1"' + (current.enabled ? ' selected' : '') + '>On</option></select>') +
-          row('Output', '<select id="bdc_outputs">' + outOpts + '</select>') +
+          row('Output',
+              box('bdc_out_ndi', 'ndi', 'NDI', '— uncompressed, on the CPU') +
+              box('bdc_out_srt', 'srt', 'SRT', '— H.264 from the hardware encoder') +
+              box('bdc_out_hdmi', 'hdmi', 'HDMI', '— straight to the panel') +
+              '<div id="bdc_out_hint" style="font-size:11px;opacity:.7;margin-top:3px;"></div>') +
+          row('HDMI via', '<select id="bdc_hdmimode">' +
+              '<option value="decoder"' + (current.hdmi_mode !== 'direct' ? ' selected' : '') + '>The decoder — keeps the OSD and web UI</option>' +
+              '<option value="direct"' + (current.hdmi_mode === 'direct' ? ' selected' : '') + '>Direct — takes the display from the decoder</option>' +
+              '</select>', 'bdc_row_hdmimode') +
           row('Camera',
               '<div style="display:flex;gap:6px;align-items:center;">' +
                 '<select id="bdc_device" style="flex:1;min-width:0;"></select>' +
@@ -88,8 +94,13 @@
         '</div></div>' +
       '</div>';
 
-    document.getElementById('bdc_outputs').addEventListener('change', onOutputsChange);
+    OUTPUT_BOXES.forEach(function (b) {
+      var e = document.getElementById(b[0]);
+      if (e) e.addEventListener('change', onOutputsChange);
+    });
     document.getElementById('bdc_save').addEventListener('click', save);
+    var hm = document.getElementById('bdc_hdmimode');
+    if (hm) hm.addEventListener('change', onOutputsChange);
     document.getElementById('bdc_detect').addEventListener('click', detect);
     onOutputsChange();
     fillDevices();
@@ -100,22 +111,53 @@
     }
   }
 
+  // SRT and HDMI share one capture through a tee, so they combine freely. NDI
+  // cannot join them: it captures V4L2 itself while GStreamer owns the camera
+  // for the other two, and one device cannot have two owners.
+  var OUTPUT_BOXES = [
+    ['bdc_out_ndi', 'ndi'],
+    ['bdc_out_srt', 'srt'],
+    ['bdc_out_hdmi', 'hdmi']
+  ];
+
+  function selectedOutputs() {
+    return OUTPUT_BOXES.filter(function (b) {
+      var e = document.getElementById(b[0]);
+      return e && e.checked;
+    }).map(function (b) { return b[1]; }).join(',');
+  }
+
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
     });
   }
 
-  // Only show the fields that the chosen output actually uses, and warn about
-  // the two things that will otherwise surprise people.
+  // Only show the fields that the chosen outputs actually use, and warn about
+  // the things that will otherwise surprise people.
   function onOutputsChange() {
-    var v = document.getElementById('bdc_outputs').value;
-    show('bdc_row_ndi', v === 'ndi');
+    var v = selectedOutputs();
+    show('bdc_row_ndi', v.indexOf('ndi') !== -1);
     show('bdc_row_srt', v.indexOf('srt') !== -1);
+    show('bdc_row_hdmimode', v.indexOf('hdmi') !== -1);
+
+    var hint = document.getElementById('bdc_out_hint');
+    if (hint) {
+      hint.textContent = v === ''
+        ? 'Pick at least one output.'
+        : 'All three share one capture, so they can run together.';
+    }
+
     var warn = '';
+    var mode = (document.getElementById('bdc_hdmimode') || {}).value;
     if (v.indexOf('hdmi') !== -1) {
-      warn = 'HDMI output takes over the display from the decoder. The normal ' +
-             'PLAY output stops until the converter is switched off again.';
+      if (mode === 'direct') {
+        warn = 'Direct HDMI takes the display from the decoder: the OSD, the web UI video and tally stop while the converter runs, and come back when it is switched off.';
+      } else if (v.indexOf('ndi') === -1) {
+        warn = 'HDMI through the decoder shows the NDI stream, so switch NDI on as well.';
+      } else {
+        warn = 'HDMI through the decoder leaves the whole BirdDog stack running; it costs an encode and a decode of latency.';
+      }
     }
     if (caps && !caps.bitrate_adjustable && v.indexOf('srt') !== -1) {
       warn += (warn ? ' ' : '') +
@@ -181,10 +223,14 @@
   }
 
   function save() {
+    if (selectedOutputs() === '') {
+      setMsg('Pick at least one output before applying.', 'error');
+      return;
+    }
     var size = document.getElementById('bdc_size').value.split('x');
     var body = {
       enabled: document.getElementById('bdc_enabled').value === '1',
-      outputs: document.getElementById('bdc_outputs').value,
+      outputs: selectedOutputs(),
       device: document.getElementById('bdc_device').value,
       width: parseInt(size[0], 10),
       height: parseInt(size[1], 10),
@@ -193,6 +239,7 @@
       ndi_name: document.getElementById('bdc_ndiname').value,
       srt_url: document.getElementById('bdc_srturl').value,
       synthetic: document.getElementById('bdc_synthetic').value === '1',
+      hdmi_mode: (document.getElementById('bdc_hdmimode') || {}).value || 'decoder',
       connector: current.connector || 0
     };
     setMsg('Applying…', '');

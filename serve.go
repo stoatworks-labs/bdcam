@@ -195,7 +195,9 @@ func (a *APIServer) handleDevices(w http.ResponseWriter, r *http.Request) {
 // hard-coding limits that are really properties of this device's GStreamer.
 func (a *APIServer) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"outputs":            []string{"ndi", "srt", "hdmi", "srt,hdmi"},
+		"outputs":            []string{"ndi", "srt", "hdmi"},
+		"outputs_combinable": true,
+		"hdmi_modes":         []string{"decoder", "direct"},
 		"formats":            []string{"auto", "nv12", "mjpeg", "yuyv", "uyvy"},
 		"max_width":          1920,
 		"max_height":         1088,
@@ -203,8 +205,9 @@ func (a *APIServer) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		"bitrate_adjustable": false,
 		"notes": []string{
 			"SRT and HDMI encode on the VEPU via mpph264enc, which exposes no bitrate, GOP or rate-control setting in this firmware — it derives a bitrate from the resolution and frame rate.",
-			"NDI cannot be combined with SRT or HDMI yet: the NDI path captures directly while GStreamer owns the camera for the others.",
-			"HDMI via kmssink needs DRM master, which PPApp holds. Stopping BirdDogRunner frees it and blanks the normal output until it is started again.",
+			"All outputs share one capture, so any combination can run at once.",
+			"HDMI through the decoder points the PLAY's own decoder at the NDI stream, so nothing is taken from it — the OSD, web UI and tally keep working. It costs an encode and a decode of latency, and needs NDI switched on.",
+			"Direct HDMI uses kmssink, which needs DRM master and therefore stops the decoder for as long as the converter runs.",
 		},
 	})
 }

@@ -24,6 +24,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -72,12 +73,6 @@ func parseOutputs(s string) (Outputs, error) {
 	if !o.any() {
 		return o, fmt.Errorf("no outputs selected")
 	}
-	// One process cannot open the camera twice, and the NDI path does its own
-	// V4L2 capture while SRT and HDMI are fed by GStreamer. Combining them
-	// needs a single owner of the device — see the README roadmap.
-	if o.NDI && (o.SRT || o.HDMI) {
-		return o, fmt.Errorf("ndi cannot be combined with srt or hdmi yet: both want to own the camera")
-	}
 	return o, nil
 }
 
@@ -99,8 +94,8 @@ type PipelineConfig struct {
 // gstArgs builds the gst-launch-1.0 argument list. Kept as a pure function so
 // the shape of the pipeline is testable without a camera or a device.
 func gstArgs(c PipelineConfig) ([]string, error) {
-	if !c.Out.SRT && !c.Out.HDMI {
-		return nil, fmt.Errorf("pipeline needs srt or hdmi")
+	if !c.Out.any() {
+		return nil, fmt.Errorf("pipeline needs at least one output")
 	}
 	if c.Width > 1920 || c.Height > 1088 {
 		return nil, fmt.Errorf("mpph264enc caps stop at 1920x1088, asked for %dx%d", c.Width, c.Height)
@@ -147,48 +142,78 @@ func gstArgs(c PipelineConfig) ([]string, error) {
 	return append(p, encodeAndDisplay(c)...), nil
 }
 
-// encodeAndDisplay is the tail of the pipeline: the encoder branch, the HDMI
-// branch, or a tee feeding both.
+// encodeAndDisplay is the tail of the pipeline: one branch per output, behind a
+// tee when there is more than one.
+//
+// NDI's branch hands us raw UYVY over the pipe, which is precisely the layout
+// libndi wants, so nothing converts it again on our side. Routing NDI through
+// GStreamer rather than capturing separately is what lets it run alongside HDMI
+// and SRT — one owner of the camera — and it also replaces Go's image/jpeg with
+// libjpeg-turbo, which is about ten times faster on this hardware.
 func encodeAndDisplay(c PipelineConfig) []string {
 	var p []string
-	encode := []string{
-		"!", "queue", "max-size-buffers=3", "leaky=downstream",
+	q := []string{"queue", "max-size-buffers=3", "leaky=downstream"}
+
+	encode := append(append([]string{}, q...),
 		"!", "mpph264enc",
 		"!", "h264parse", "config-interval=1",
 		"!", "video/x-h264,stream-format=byte-stream,alignment=au",
 		"!", "fdsink", "fd=1", "sync=false",
-	}
+	)
 	// The VOP scans out NV12; jpegdec hands back I420 or, from a 4:2:2 source,
 	// Y42B, and kmssink takes neither. Without this the whole pipeline fails
 	// negotiation right back at the source with a bare "not-negotiated".
-	display := []string{
-		"!", "queue", "max-size-buffers=3", "leaky=downstream",
+	display := append(append([]string{}, q...),
 		"!", "videoconvert",
 		"!", "video/x-raw,format=NV12",
 		"!", "kmssink", "force-modesetting=true",
-	}
+	)
 	if c.ConnectorID > 0 {
 		display = append(display, fmt.Sprintf("connector-id=%d", c.ConnectorID))
 	}
+	// I420, not UYVY. jpegdec hands back planar 4:2:2, and this GStreamer has a
+	// fast path to I420 but a generic one to everything else — measured on the
+	// device at 24 fps to I420 against 1 fps to UYVY and 2 fps to NV12, for the
+	// same frames. libndi takes I420 directly, so nothing is lost by preferring
+	// it, and the frames are smaller through the pipe as well.
+	//
+	// fd 3 rather than stdout, so NDI and SRT can both have a pipe.
+	ndi := append(append([]string{}, q...),
+		"!", "videoconvert",
+		"!", "video/x-raw,format=I420",
+		"!", "fdsink", fmt.Sprintf("fd=%d", ndiPipeFD), "sync=false",
+	)
 
-	switch {
-	case c.Out.SRT && c.Out.HDMI:
-		p = append(p, "!", "tee", "name=t")
+	var branches [][]string
+	if c.Out.SRT {
+		branches = append(branches, encode)
+	}
+	if c.Out.HDMI {
+		branches = append(branches, display)
+	}
+	if c.Out.NDI {
+		branches = append(branches, ndi)
+	}
+
+	if len(branches) == 1 {
+		return append(p, append([]string{"!"}, branches[0]...)...)
+	}
+	p = append(p, "!", "tee", "name=t")
+	for _, b := range branches {
 		p = append(p, "t.")
-		p = append(p, encode...)
-		p = append(p, "t.")
-		p = append(p, display...)
-	case c.Out.SRT:
-		p = append(p, encode...)
-	case c.Out.HDMI:
-		p = append(p, display...)
+		p = append(p, append([]string{"!"}, b...)...)
 	}
 	return p
 }
 
+// ndiPipeFD is the descriptor the raw-frame branch writes to. stdout carries
+// H.264 for SRT, so NDI needs its own.
+const ndiPipeFD = 3
+
 type Pipeline struct {
 	cmd    *exec.Cmd
 	Stdout io.ReadCloser
+	Raw    io.ReadCloser // raw UYVY frames for NDI, on fd 3
 
 	// A duration timer, a signal and the main path can all end up here at
 	// once. Waiting twice on the same child returns "waitid: no child
@@ -208,20 +233,30 @@ func StartPipeline(args []string) (*Pipeline, error) {
 	if err != nil {
 		return nil, err
 	}
+	// ExtraFiles[0] becomes fd 3 in the child: the raw-frame branch for NDI.
+	rawR, rawW, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	cmd.ExtraFiles = []*os.File{rawW}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
+		rawR.Close()
+		rawW.Close()
 		return nil, fmt.Errorf("start gst-launch-1.0 (is gstreamer installed?): %w", err)
 	}
+	// The child holds the write end now; ours must go or the reader never sees EOF.
+	rawW.Close()
 	go func() {
 		sc := bufio.NewScanner(stderr)
 		for sc.Scan() {
 			logf("gst: %s", sc.Text())
 		}
 	}()
-	return &Pipeline{cmd: cmd, Stdout: stdout}, nil
+	return &Pipeline{cmd: cmd, Stdout: stdout, Raw: rawR}, nil
 }
 
 func (p *Pipeline) Close() error {

@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -74,7 +75,7 @@ func runPipeline(cfg runConfig) error {
 	// kmssink cannot set a mode while PPApp is DRM master, so taking the
 	// display means stopping it. Warning about it is no use from a web page,
 	// where there is no shell to run systemctl in.
-	if cfg.out.HDMI {
+	if cfg.out.HDMI && cfg.hdmiMode == "direct" {
 		restore := takeDisplay()
 		defer restore()
 	}
@@ -86,7 +87,7 @@ func runPipeline(cfg runConfig) error {
 		Height:       cfg.height,
 		FPS:          cfg.fps,
 		Pixfmt:       pixfmt,
-		Out:          cfg.out,
+		Out:          pipelineOutputs(cfg),
 		ConnectorID:  cfg.connector,
 		SoftwareJPEG: softwareJPEG,
 	})
@@ -108,9 +109,9 @@ func runPipeline(cfg runConfig) error {
 		_ = pl.Close()
 	}()
 
-	// HDMI with no SRT means nothing comes back to us — GStreamer is doing all
-	// of the work and we are only supervising it.
-	if !cfg.out.SRT {
+	// HDMI alone means nothing comes back to us — GStreamer is doing all of the
+	// work and we are only supervising it.
+	if !cfg.out.SRT && !cfg.out.NDI {
 		logf("hdmi output running; nothing to read back")
 		if cfg.duration > 0 {
 			go func() {
@@ -120,6 +121,31 @@ func runPipeline(cfg runConfig) error {
 			}()
 		}
 		return pl.Wait()
+	}
+
+	// NDI reads raw UYVY off the second pipe, in its own goroutine so it runs
+	// alongside SRT rather than instead of it.
+	var ndiDone chan struct{}
+	if cfg.out.NDI {
+		ndiDone = make(chan struct{})
+		go func() {
+			defer close(ndiDone)
+			if err := pumpNDI(cfg, pl.Raw); err != nil {
+				logf("NDI output stopped: %v", err)
+			}
+		}()
+		if !cfg.out.SRT {
+			// Nothing to read on stdout; wait for the NDI pump or the pipeline.
+			if cfg.duration > 0 {
+				go func() {
+					time.Sleep(cfg.duration)
+					logf("duration reached, stopping")
+					_ = pl.Close()
+				}()
+			}
+			<-ndiDone
+			return pl.Wait()
+		}
 	}
 
 	sender, err := DialSRT(cfg.srtURL)
@@ -182,7 +208,69 @@ func runPipeline(cfg runConfig) error {
 	return err
 }
 
+// pipelineOutputs drops HDMI from the GStreamer graph when the decoder is doing
+// the display: there is no kmssink branch in that mode, only the NDI feed the
+// decoder receives.
+func pipelineOutputs(cfg runConfig) Outputs {
+	o := cfg.out
+	if o.HDMI && cfg.hdmiMode != "direct" {
+		o.HDMI = false
+	}
+	return o
+}
+
 var errStop = fmt.Errorf("stop requested")
+
+// pumpNDI reads whole raw frames from the pipeline and sends them as NDI. The
+// frames are fixed size, so the framing is just "read exactly this many bytes"
+// — no parsing, and no copy beyond the read itself, since UYVY is what libndi
+// takes directly.
+func pumpNDI(cfg runConfig, r io.Reader) error {
+	ndi, err := LoadNDI(cfg.ndiLib)
+	if err != nil {
+		return err
+	}
+	defer ndi.Close()
+	send, err := ndi.NewSender(cfg.name, cfg.clock)
+	if err != nil {
+		return err
+	}
+	defer send.Close()
+	logf("sending as %q (from the shared capture, %d/1 fps declared)", send.SourceName(), cfg.fps)
+
+	if cfg.out.HDMI && cfg.hdmiMode != "direct" {
+		restore := pointDecoderAt(send.SourceName(), send.SourceURL())
+		defer restore()
+	}
+
+	// I420: a full-size luma plane followed by two half-size chroma planes,
+	// contiguous, which is exactly how libndi wants it. Stride is the luma
+	// stride; NDI derives the chroma strides from it.
+	frameSize := cfg.width * cfg.height * 3 / 2
+	buf := make([]byte, frameSize)
+	f := Frame{Width: cfg.width, Height: cfg.height, FourCC: fourCCI420, Stride: cfg.width, Data: buf}
+
+	var frames int
+	start := time.Now()
+	last := start
+	atLast := 0
+	for {
+		if _, err := io.ReadFull(r, buf); err != nil {
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				logf("raw frame pipe closed after %d frames", frames)
+				return nil
+			}
+			return err
+		}
+		send.SendVideo(&f, cfg.fps, 1)
+		frames++
+		if now := time.Now(); now.Sub(last) >= cfg.statsEach {
+			w := now.Sub(last).Seconds()
+			logf("ndi: frames=%d fps=%.2f conns=%d", frames, float64(frames-atLast)/w, send.Connections())
+			last, atLast = now, frames
+		}
+	}
+}
 
 // nearestRate picks the supported frame rate closest to what was asked for,
 // preferring the higher one when a request sits exactly between two.

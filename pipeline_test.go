@@ -16,8 +16,9 @@ func TestParseOutputs(t *testing.T) {
 		{"hdmi", "hdmi", false},
 		{"srt,hdmi", "srt+hdmi", false},
 		{"SRT, HDMI", "srt+hdmi", false},
-		{"ndi,srt", "", true},  // one camera, two owners
-		{"ndi,hdmi", "", true}, // ditto
+		{"ndi,srt", "ndi+srt", false},   // one capture, tee'd
+		{"ndi,hdmi", "ndi+hdmi", false}, // the combination worth having
+		{"ndi,srt,hdmi", "ndi+srt+hdmi", false},
 		{"rtmp", "", true},
 		{"", "", true},
 	} {
@@ -125,6 +126,55 @@ func TestHDMIBranchConvertsToNV12(t *testing.T) {
 	}
 	if strings.Index(got, "videoconvert") > strings.Index(got, "kmssink") {
 		t.Errorf("the conversion must come before kmssink: %s", got)
+	}
+}
+
+// The whole point of routing NDI through GStreamer: one camera, several
+// outputs, which the direct V4L2 path could never do.
+func TestNDIAndHDMITogether(t *testing.T) {
+	c := base()
+	c.Out = Outputs{NDI: true, HDMI: true}
+	got := args(t, c)
+	if !strings.Contains(got, "tee name=t") {
+		t.Errorf("combined outputs need a tee: %s", got)
+	}
+	if !strings.Contains(got, "kmssink") {
+		t.Errorf("HDMI branch missing: %s", got)
+	}
+	// NDI takes UYVY, which is what libndi wants, on its own descriptor so it
+	// does not collide with SRT's H.264 on stdout.
+	// I420 rather than UYVY: measured 24 fps against 1 fps for the same frames,
+	// because jpegdec's 4:2:2 output has a fast path only to I420 here.
+	if !strings.Contains(got, "format=I420") || !strings.Contains(got, "fd=3") {
+		t.Errorf("NDI branch should emit I420 on fd 3: %s", got)
+	}
+	if strings.Contains(got, "mpph264enc") {
+		t.Errorf("no encoder should appear without SRT: %s", got)
+	}
+}
+
+func TestAllThreeOutputs(t *testing.T) {
+	c := base()
+	c.Out = Outputs{NDI: true, SRT: true, HDMI: true}
+	got := args(t, c)
+	if strings.Count(got, "t.") != 3 {
+		t.Errorf("expected three tee branches: %s", got)
+	}
+	// SRT keeps stdout, NDI has fd 3 — they must not share a descriptor.
+	if !strings.Contains(got, "fd=1") || !strings.Contains(got, "fd=3") {
+		t.Errorf("SRT and NDI need separate pipes: %s", got)
+	}
+}
+
+func TestNDIAloneNeedsNoTee(t *testing.T) {
+	c := base()
+	c.Out = Outputs{NDI: true}
+	got := args(t, c)
+	if strings.Contains(got, "tee") {
+		t.Errorf("a single output should not be tee'd: %s", got)
+	}
+	if !strings.Contains(got, "format=I420") {
+		t.Errorf("NDI branch should emit I420: %s", got)
 	}
 }
 

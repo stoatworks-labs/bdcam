@@ -28,17 +28,22 @@ type Config struct {
 	NDIName   string `json:"ndi_name"`
 	SRTURL    string `json:"srt_url"`
 	Connector int    `json:"connector"`
+	// "decoder" shows the camera on HDMI by pointing the PLAY's own decoder at
+	// our NDI stream; "direct" drives the display with kmssink and takes it
+	// away from PPApp. Empty means decoder, which is the friendlier default.
+	HDMIMode  string `json:"hdmi_mode"`
 	Synthetic bool   `json:"synthetic"`
 }
 
 func DefaultConfig() Config {
 	return Config{
-		Enabled: false,
-		Outputs: "ndi",
-		Width:   1280,
-		Height:  720,
-		FPS:     30,
-		Format:  "auto",
+		Enabled:  false,
+		Outputs:  "ndi",
+		Width:    1280,
+		Height:   720,
+		FPS:      30,
+		Format:   "auto",
+		HDMIMode: "decoder",
 	}
 }
 
@@ -103,6 +108,15 @@ func (c Config) Validate() error {
 	if _, err := parseFormat(c.Format); err != nil {
 		return err
 	}
+	switch c.HDMIMode {
+	case "", "decoder", "direct":
+	default:
+		return fmt.Errorf("hdmi_mode must be decoder or direct, got %q", c.HDMIMode)
+	}
+	// The decoder can only show what it can receive, and that is our NDI feed.
+	if outs.HDMI && c.HDMIMode != "direct" && !outs.NDI {
+		return fmt.Errorf("HDMI through the decoder needs NDI switched on too — that is what the decoder displays")
+	}
 	return nil
 }
 
@@ -132,6 +146,9 @@ func (c Config) ToArgs() []string {
 	}
 	if c.Synthetic {
 		a = append(a, "--synthetic")
+	}
+	if c.HDMIMode != "" {
+		a = append(a, "--hdmi-mode", c.HDMIMode)
 	}
 	return a
 }

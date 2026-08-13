@@ -198,6 +198,17 @@ func (s *Sender) SourceName() string {
 	return goStr(src.pNDIName)
 }
 
+// SourceURL is the "host:port" libndi is listening on. The PLAY's own finder
+// hides local sources, so pointing its decoder at us needs an explicit address
+// rather than a name lookup.
+func (s *Sender) SourceURL() string {
+	src := s.n.sendGetSource(s.inst)
+	if src == nil {
+		return ""
+	}
+	return goStr(src.pURL)
+}
+
 // SendVideo submits one uncompressed frame. stride is bytes per line for packed
 // formats; for planar formats pass the luma stride and lay the planes out
 // contiguously, which is what libndi expects.
