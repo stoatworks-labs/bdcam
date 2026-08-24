@@ -92,3 +92,10 @@ replacing it.
   assuming a camera is cheap to ingest.
 - **Stopping `PPApp` to free DRM leaves the HDMI output dark.** It looks like a
   brick and is not. Start `BirdDogRunner` again when you are done.
+
+## Notes
+
+`docs/NOTES.md` carries this repo's working notes — current status, decisions
+already made, and the traps that have actually bitten. Read it before changing
+anything non-obvious. Cross-cutting fleet knowledge lives in
+[fleet-notes](https://github.com/stoatworks-labs/fleet-notes).
