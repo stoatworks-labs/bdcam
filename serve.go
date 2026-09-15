@@ -213,6 +213,7 @@ func (a *APIServer) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"HDMI through the decoder points the PLAY's own decoder at our NDI stream, so nothing is taken from it and the OSD, web UI and tally keep working. It requires NDI set to HX — the decoder renders full-bandwidth NDI green on this firmware.",
 			"Direct HDMI drives the display itself and works with any NDI format, but lowers the frame rate of every output to about 11 fps at 1080p.",
 			"At heights that are not a multiple of 16, such as 1080, the bottom 8 rows are cropped. H.264 pads to a macroblock boundary and this decoder ignores the crop the standard puts in the stream, showing the padding as a green band.",
+			"With the streaming gateway installed, an SRT destination of srt://127.0.0.1:8890?streamid=publish:cam puts the camera on the gateway's path \"cam\", from where it is served as RTSP, RTMP, HLS, WebRTC and SRT and can be pushed to RTMP(S), RTSP, SRT or WHIP destinations. The GATEWAY button fills that in.",
 		},
 	})
 }

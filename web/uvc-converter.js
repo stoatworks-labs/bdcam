@@ -81,7 +81,14 @@
               '<option value="0"' + (!current.synthetic ? ' selected' : '') + '>Off</option>' +
               '<option value="1"' + (current.synthetic ? ' selected' : '') + '>On (no camera needed)</option></select>') +
           row('NDI source name', '<input type="text" id="bdc_ndiname" value="' + esc(current.ndi_name) + '" placeholder="&lt;hostname&gt; (Cam)" />', 'bdc_row_ndi') +
-          row('SRT destination', '<input type="text" id="bdc_srturl" value="' + esc(current.srt_url) + '" placeholder="srt://host:9000?streamid=cam" />', 'bdc_row_srt') +
+          row('SRT destination',
+              '<div style="display:flex;gap:6px;align-items:center;">' +
+                '<input type="text" id="bdc_srturl" value="' + esc(current.srt_url) + '" placeholder="srt://host:9000?streamid=cam" style="flex:1;min-width:0;" />' +
+                '<button type="button" id="bdc_srt_gateway" class="restart" style="white-space:nowrap;padding:4px 10px;" title="Publish to the streaming gateway on this PLAY, if it is installed">GATEWAY</button>' +
+              '</div>' +
+              '<div style="font-size:11px;opacity:.7;margin-top:3px;">GATEWAY fills in the address of this PLAY\u2019s own streaming gateway (' +
+                'the Streaming tab): the camera then comes out as RTSP, RTMP, HLS, WebRTC and SRT, and can be pushed on from there.</div>',
+              'bdc_row_srt') +
           '<div class="row m-0 p-1"><div class="col-xl-5 m-0 p-0"></div>' +
             '<div class="col-xl-7 m-0 p-0"><button class="restart" type="button" id="bdc_save">APPLY</button></div>' +
           '</div>' +
@@ -108,6 +115,14 @@
     var nf = document.getElementById('bdc_ndiformat');
     if (nf) nf.addEventListener('change', onOutputsChange);
     document.getElementById('bdc_detect').addEventListener('click', detect);
+    // The gateway's SRT listener on loopback. Path "cam" is what its default
+    // configuration expects; bdcam ignores pkt_size, which is there for the
+    // benefit of anyone pasting the same address into ffmpeg or OBS.
+    document.getElementById('bdc_srt_gateway').addEventListener('click', function () {
+      var srtBox = document.getElementById('bdc_out_srt');
+      if (srtBox && !srtBox.checked) { srtBox.checked = true; onOutputsChange(); }
+      document.getElementById('bdc_srturl').value = 'srt://127.0.0.1:8890?streamid=publish:cam&pkt_size=1316';
+    });
     onOutputsChange();
     fillDevices();
     if (caps && caps.notes) {

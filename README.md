@@ -166,6 +166,19 @@ bdcam --output hdmi                                   # kmssink, straight to the
 bdcam --output srt,hdmi --srt-url srt://host:9000     # one capture, tee'd to both
 ```
 
+With the [streaming gateway](https://github.com/stoatworks-labs/bd-play-stream-gateway)
+installed on the same PLAY, point the SRT output at its listener on loopback and the
+camera comes out as RTSP, RTMP, HLS, WebRTC and SRT — and can be pushed on to
+RTMP(S), RTSP, SRT or WHIP destinations — with no second encode:
+
+```bash
+bdcam --output srt --srt-url 'srt://127.0.0.1:8890?streamid=publish:cam'
+```
+
+The UVC Converter tab's **GATEWAY** button fills that address in. `pkt_size`, which
+the gateway's own tab appends for ffmpeg's benefit, is ignored here: the muxer already
+sends whole 1316-byte payloads.
+
 SRT and HDMI are built on the device's own GStreamer, which carries exactly the
 elements needed: `mpph264enc` (the VEPU), `mppjpegdec` (hardware JPEG, when the
 camera's chroma allows it — see below) and `kmssink`. Encoded H.264 comes back over a pipe,
