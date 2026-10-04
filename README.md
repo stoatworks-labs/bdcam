@@ -316,6 +316,10 @@ Still open, roughly in order of value:
 6. **Audio** — UAC capture into `NDIlib_send_send_audio_v3`, and into the TS for
    SRT.
 
+<!-- attributions:start -->
+This project is built on other people's work — see [ATTRIBUTIONS.md](ATTRIBUTIONS.md).
+<!-- attributions:end -->
+
 ## Licence
 
 MIT — see [LICENSE](LICENSE).
